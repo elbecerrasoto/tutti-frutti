@@ -1,0 +1,195 @@
+#!/bin/bash
+
+# Emanuel Becerra Soto
+# elbecerrasoto@gmail.com
+# 2018 September
+# version 2.1
+
+# Script to generate the plot (graph) of a
+# function.
+
+# Dependencies
+# R language 3.4 or higher
+# R packages ggplot2 and ggthemes
+# GNOME desktop environment
+# gnome-open
+# The script works without GNOME
+# the only lost feature would be automatic opening
+# of the generated files
+
+######### Parsing The Arguments #########
+
+#Set Script Name variable
+SCRIPT=`basename ${BASH_SOURCE[0]}`
+
+#Initialize variables to default values.
+fun='x'
+range='0,10'
+output="$HOME/Pictures/plot_script"
+name="`date +%d%b%y_%Hh%Mm%Ss`.svg"
+mirror='FALSE'
+only_table='FALSE'
+n_tabulate='10'
+significative='2'
+
+# Make output dir if not existent
+mkdir --parents $output
+
+#Set fonts for Help.
+NORM=`tput sgr0`
+BOLD=`tput bold`
+REV=`tput smso`
+
+#Help function
+function HELP {
+  echo -e \\n"Help for ${BOLD}${SCRIPT}${NORM}"\\n
+  echo -e "${BOLD}${SCRIPT}${NORM} generates the graph of a function"\\n
+  echo -e "${REV}Basic usage:${NORM} ${BOLD}$SCRIPT -f 'function'${NORM}"\\n
+  echo "Optional arguments:"
+  echo "${BOLD}-r${NORM} Range of the x variable. Default is 0,10"
+  echo "${BOLD}-n${NORM} Name of the output. Default is current_time.svg"
+  echo "${BOLD}-o${NORM} Output directory. Default is $output"
+  echo "${BOLD}-m${NORM} y axis mirrors x axis. Default OFF."
+  echo "${BOLD}-t${NORM} Do not generate a plot, only tabulate it. Default OFF."
+  echo "${BOLD}-v${NORM} Number of values to tabulate + 1. Default 10."
+  echo "${BOLD}-s${NORM} Up to how many significative digits to round. Default 2."
+  echo "${BOLD}-h${NORM} Help menu."
+  echo -e \\n"Example: ${BOLD}$SCRIPT -f 'x^2' -r '-2,4' -n 'Squared.svg' -o $HOME ${NORM}"
+  echo -e "Example: ${BOLD}$SCRIPT -f 'x^x' -r '0,4' -n 'x_to_x.png' ${NORM}"
+  echo -e "Example: ${BOLD}$SCRIPT -f '1/sqrt(2*pi*1^2)*exp(-(x-0)^2/2*1^2)' -r '-2,2' ${NORM}"
+  echo -e "Example: ${BOLD}$SCRIPT -f '1/x' -t -s '4' -v '20' ${NORM}"
+  echo -e "Example: ${BOLD}$SCRIPT -m -f 'sqrt(5^2-x^2)' -r '-5,5' ${NORM}"
+  echo -e "Example: ${BOLD}$SCRIPT -m -t -f '\`^\`(-x+0i,x)' -v 10 -r '10,12' ${NORM}"\\n
+  echo -e "Functions MUST follow R language syntax and the variable is lower case x."
+  echo -e "Available output extensions include: pdf, jpeg, tiff, png, bmp, svg."\\n
+  echo -e "For bug reports and further details,"
+  echo -e "please send an e-mail at: elbecerrasoto@gmail.com"
+  echo -e "2018 September"\\n
+  exit 1
+}
+
+#Check the number of arguments. If none are passed, print help and exit.
+NUMARGS=$#
+# echo -e \\n"Number of arguments: $NUMARGS"
+if [ $NUMARGS -eq 0 ]; then
+  HELP
+fi
+
+### Start getopts code ###
+
+#Parse command line flags
+#If an option should be followed by an argument, it should be followed by a ":".
+#Notice there is no ":" after "h". The leading ":" suppresses error messages from
+#getopts. This is required to get my unrecognized option code to work.
+
+while getopts f:r:n:o:mtv:s:h FLAG; do
+  case $FLAG in
+    f) # Function
+      fun=$OPTARG
+      ;;
+    r) # Range
+      range=$OPTARG
+      ;;
+    n) # Name of the output
+      name=$OPTARG
+      ;;
+    o) # Output dir
+      output=$OPTARG
+       # Make output dir if not existent
+      mkdir --parents $output
+      ;;
+    m) # Flag to mirror x axis
+      mirror='TRUE'
+      ;;
+    t) # Only tabulate
+      only_table='TRUE'
+      ;;
+    v) # Number of values to tabulate
+      n_tabulate=$OPTARG
+      ;;
+    s) # Significant digits to round
+      significative=$OPTARG
+      ;;
+    h) # Help menu
+      HELP
+      ;;
+    \?) #unrecognized option - show help
+      echo -e \\n"Option not allowed."\\n
+      # HELP
+      echo -e "Use ${BOLD}$SCRIPT -h${NORM} to see the help documentation."\\n
+      exit 2
+      ;;
+  esac
+done
+
+shift $((OPTIND-1))  #This tells getopts to move on to the next argument.
+
+######### Main Program #########
+
+# Execute R code from here-document
+Rscript - $fun $range $output $name\
+ $only_table $n_tabulate $significative $mirror <<'EOF'
+#!/usr/bin/env Rscript
+
+args <- commandArgs(trailingOnly=TRUE)
+
+f <- args[1]
+prange <- args[2]
+output <- args[3]
+name <- args[4]
+only_table <- as.logical(args[5])
+n_steps <- as.numeric(args[6])
+significative <- as.numeric(args[7])
+mirror <- as.logical(args[8])
+
+# Parameters
+n_points <- 300 # number of points to interpolate along
+
+library(ggplot2)
+library(ggthemes)
+
+setwd(output)
+s_execute <- paste('x_range', '<-', 'c(', prange, ')', sep='')
+eval(parse(text=s_execute))
+
+code_left <- 'f2plot <- function(x){'
+code_right <- '}'
+f_code <- paste(code_left, f ,code_right, sep = '')
+
+# Generating the function to plot
+eval(parse(text=f_code))
+
+# Tabulating the data to print it as text
+step <-  (x_range[2] - x_range[1]) / n_steps
+x_eval <- seq( x_range[1], x_range[2], step )
+
+tabulated <- data.frame( x = x_eval, y = round ( f2plot( x_eval ), significative ) )
+print(tabulated)
+
+if(mirror) {
+  p <- ggplot(data.frame(x=x_range), aes(x=x))+
+    stat_function(fun = f2plot, n=n_points)+
+    ggtitle(f)+
+    coord_cartesian(ylim=x_range)+
+    theme_fivethirtyeight()
+} else {
+  p <- ggplot(data.frame(x=x_range), aes(x=x))+
+    stat_function(fun = f2plot, n=n_points)+
+    ggtitle(f)+
+    theme_fivethirtyeight()
+}
+
+if (!only_table) {
+  ggsave(name,p)
+}
+EOF
+
+# Open the plot with default software
+if [ $only_table ==  'FALSE' ]; then
+  gnome-open $output/$name
+fi
+
+# Remomve temporary file
+if [ -f $output/'Rplots.pdf' ]; then
+  rm $output/'Rplots.pdf'
+fi

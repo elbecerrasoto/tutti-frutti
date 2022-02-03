@@ -1,0 +1,339 @@
+#!/usr/bin/env Rscript
+
+###### Setting libraries and functions ######
+
+set.seed(479)
+
+library(tidyverse)
+library(ggthemes)
+library(DataExplorer)
+library(DAAG)
+library(broom)
+library(caret)
+library(MASS)
+
+partition_data <- function(data, train = 0.6, test = 0.2){
+  validation <- 1 - (train + test)
+  n <- nrow(data)
+  n_train <- floor(n * train)
+  n_test <- ceiling(n * test)
+  n_validation <- n - (n_train + n_test)
+  random_idx <- sample(1:n) 
+  idx_train <- random_idx[1:n_train]
+  idx_test <- random_idx[(n_train+1) : (x <- (n_train+1 + n_test-1))]
+  idx_validation <- random_idx[ (x+1) : n]
+  idx_train <- sort(idx_train)
+  idx_test <- sort(idx_test)
+  idx_validation <- sort(idx_validation)
+  data_train <- data[idx_train,]
+  data_test <- data[idx_test,]
+  data_val <- data[idx_validation,]
+  partitions <- list(data_train, data_test, data_val)
+  names(partitions) <- c('train', 'test', 'val')
+  return(partitions) 
+}
+
+# root_mean_squared_error
+rmse <- function(predicted , observed){
+  if( length(predicted) != length (observed) ){
+    return( print('Error: Vectors of Different size') )
+  }
+  n <- length( predicted )
+  RMSD <- sqrt ( sum( ( predicted - observed )^2 / n ) )
+  return( RMSD )
+}
+
+# Fill NAs of a df col with some value
+fill_col <- function( df, df_col, value) {
+  feature <- df[[ df_col ]]
+  feature[ is.na(feature) ] <- value
+  df[ df_col ] <- feature
+  return( df )
+}
+
+# Get the mode, robust to NAs and categoricals
+stat_mode <- function(x, return_multiple = TRUE, na.rm = FALSE) {
+  if(na.rm){
+    x <- na.omit(x)
+  }
+  ux <- unique(x)
+  freq <- tabulate(match(x, ux))
+  mode_loc <- if(return_multiple) which(freq==max(freq)) else which.max(freq)
+  return(ux[mode_loc])
+}
+
+###### Loading Data ######
+
+# Trimming white spaces
+system("sed -r 's/ +//g ' data/train.csv > data/train2.csv")
+system("sed -r 's/ +//g ' data/test.csv > data/test2.csv")
+
+file1 <- 'data/train2.csv'
+file2 <- 'data/test2.csv'
+
+raw_train <- read.csv( file = file1, stringsAsFactors = FALSE, header = TRUE )
+raw_test <- read.csv( file = file2, stringsAsFactors = FALSE, header = TRUE )
+
+raw_train <- as.tibble(raw_train)
+raw_test <- as.tibble(raw_test)
+
+( start_train <- raw_train$Id[ 1 ] )
+( end_train <- raw_train$Id[ nrow(raw_train) ] )  
+
+( start_test <- raw_test$Id[ 1 ] )
+( end_test <- raw_test$Id[ nrow(raw_test) ] )
+
+raw_all <- rbind( dplyr :: select(raw_train, MSSubClass:SaleCondition ),
+      dplyr :: select(raw_test, MSSubClass:SaleCondition ) )
+
+###### Wrangling Missing Values  ######
+
+miss_all <- plot_missing( raw_all )
+
+miss_cols <- as.character( filter(miss_all, num_missing > 0)$feature )
+
+# NAs could mean different things
+# Like 0, No, information non available or that something don't exist at all
+# And sometimes they're informative
+# Let's looks at the data set description
+
+# In the dataset the following NAs mean:
+# the abscence of existence and
+# they're not expressing uncertaintity
+# So they're informative
+
+informative_na <- c( 'Alley', 'BsmtQual', 'BsmtCond',
+                     'BsmtExposure', 'BsmtFinType1', 'FireplaceQu',
+                     'GarageType', 'GarageFinish','GarageQual',
+                     'GarageCond', 'PoolQC', 'Fence',
+                     'MiscFeature' )
+# All columns with informative NAs are categorical
+
+non_informative_na <- setdiff(miss_cols, informative_na)
+
+# Fill the informative NAs with None
+# For our luck the informative NAs are the majority
+raw_all2 <- raw_all
+for( feature in informative_na ){
+  raw_all2 <- fill_col(df = raw_all2, df_col = feature, value = 'None')
+}
+
+# Fill the non informative NAs with the mode
+for( feature in non_informative_na ){
+  current_mode <- stat_mode( raw_all2[[ feature ]], return_multiple = FALSE, na.rm = TRUE )
+  raw_all2 <- fill_col(df = raw_all2, df_col = feature, value = current_mode)
+}
+
+plot_missing( raw_all2 )
+
+###### One-Hot Encoding ######
+
+feats_type <- sapply( raw_all2, class )
+
+( numeric_feats <- names(feats_type[ feats_type != 'character' ]) )
+( categorical_feats <- names(feats_type[ feats_type == 'character' ]) )
+
+dummies <- dummyVars( ~. , raw_all2[categorical_feats] )
+cat_1_hot <- predict( dummies, raw_all2[ categorical_feats ] )
+
+houses <- as.tibble( cbind( raw_all2[ numeric_feats ], cat_1_hot ) )
+
+###### Subsetting into validation set ######
+
+train <- houses[ start_train:end_train, ]
+test <- houses[ start_test:end_test, ]
+
+train$SalePrice <- raw_train$SalePrice
+
+val <- partition_data(data = train, train = 0.8, test = 0.0)$val
+
+###### Stepwise Regression ######
+
+n <- ncol(train)
+( ivs <- names(train)[ 1: (n - 1) ] )
+( dv <- names(train)[ n ] )
+( iv_string <- paste( sprintf("`%s`", ivs), collapse = " + " ) )
+( reg_formula <- as.formula( paste(dv, iv_string, sep = " ~ " )) )
+
+# Model with all the variables
+model_all <- lm(formula = reg_formula, data = train)
+# Converting the model to a tidy table
+tab_all <- tidy( model_all )
+
+# diagnostic plots
+layout(matrix(c(1,2,3,4),2,2)) # optional 4 graphs/page
+plot( model_all )
+
+# Takes like 6 hours
+# Stepwise Regression
+# step <- stepAIC(model_all, direction = "both")
+# step$anova # display results
+
+# Saving the model, just in case
+# save(step, file = 'model_step_all')
+
+# Re loading the precomputed model
+load( 'model_step_all' )
+# Print the already loaded model
+step
+
+summary(step)
+
+layout(matrix(c(1,2,3,4),2,2)) # optional 4 graphs/page
+plot( step )
+
+tab_step <- tidy( step )
+tab_step <- arrange(tab_step, desc( estimate ) )
+tab_step$p.value.sig <- cut(tab_step$p.value, breaks=c(-Inf, 0.05, Inf), labels=c("sig","no_sig"))
+#View(tab_step)
+
+#write_csv(tab_step, 'step_coeff.csv')
+
+qplot(data = filter(tab_step, estimate > 0),
+      x = std.error, y = estimate, color = p.value.sig) +
+  geom_text( aes(label=term) ) + ggtitle('Positive Influence') +
+  theme_bw()
+#ggsave('pos_influ_step_all.svg')
+
+qplot(data = filter(tab_step, estimate <= 0, term != '(Intercept)'),
+      x = std.error, y = estimate, color = p.value.sig) +
+  geom_text( aes(label=term) ) + ggtitle('Negative Influence') +
+  theme_bw()
+#ggsave('neg_influ_step_all.svg')
+
+qplot(data = filter(tab_step, estimate > 0),
+      x = std.error, y = estimate, color = p.value.sig) +
+  ggtitle('Positive Influence') +
+  theme_bw()
+#ggsave('point_pos_influ_step_all.svg')
+
+qplot(data = filter(tab_step, estimate <= 0, term != '(Intercept)'),
+      x = std.error, y = estimate, color = p.value.sig) +
+  ggtitle('Negative Influence') +
+  theme_bw()
+#ggsave('point_neg_influ_step_all.svg')
+
+###### Comparing Models ######
+
+# Predicting the Price of the House
+model_comparissions <- val[ 'SalePrice' ]
+
+model_comparissions$step_all <- predict(step, newdata = val)
+model_comparissions$lm_all <- predict(model_all, newdata = val)
+
+# rmse
+rmse( predicted = model_comparissions$lm_all,
+      observed = model_comparissions$SalePrice )
+rmse( predicted = model_comparissions$step_all,
+      observed = model_comparissions$SalePrice )
+
+# rmse with the log of the predictions
+rmse( predicted = log(model_comparissions$lm_all),
+      observed = log(model_comparissions$SalePrice) )
+rmse( predicted = log(model_comparissions$step_all),
+      observed = log(model_comparissions$SalePrice) )
+
+rmse( predicted = log2(model_comparissions$lm_all),
+      observed = log2(model_comparissions$SalePrice) )
+rmse( predicted = log2(model_comparissions$step_all),
+      observed = log2(model_comparissions$SalePrice) )
+
+# The winner is lm with all the features
+
+###### Constructing the submission form ######
+
+winner <- predict(model_all, newdata = test)
+submission <- tibble(raw_test$Id, winner)
+names(submission) <- c('Id','SalePrice')
+
+write_csv(submission, 'submission.csv')
+
+
+###### Retazos ######
+
+l <- length(tab_step$term)
+ivs <- tab_step$term[ 1 : l-1 ]
+dv <- 'SalePrice'
+iv_string <- paste( ivs, collapse = " + " )
+( reg_formula <- as.formula( paste(dv, iv_string, sep = " ~ " )) )
+
+model_pre_step <- lm(reg_formula, data = train)
+step2 <- stepAIC(model_pre_step, direction = "both")
+
+winner <- predict(step2, newdata = test)
+submission <- tibble(raw_test$Id, winner)
+names(submission) <- c('Id','SalePrice')
+
+write_csv(submission, 'submission2.csv')
+
+# Comparissions
+rmse( predicted = log(model_comparissions$lm_all),
+      observed = log(model_comparissions$SalePrice) )
+rmse( predicted = log(model_comparissions$step_all),
+      observed = log(model_comparissions$SalePrice) )
+rmse( predicted = log( predict(step2, newdata = val) ),
+      observed = log(model_comparissions$SalePrice) )
+
+
+###### log transform ######
+
+library(reshape)
+
+log_all_num <- lapply( raw_all2[ numeric_feats ], function(x) { log ( abs(x) + 1 ) } ) %>%
+  as.tibble()
+
+log_houses <- as.tibble( cbind( log_all_num, cat_1_hot ) )
+
+log_train <- log_houses[ start_train:end_train, ]
+log_test <- log_houses[ start_test:end_test, ]
+
+log_train$SalePrice <- log(raw_train$SalePrice + 1)
+
+
+ggplot(stack( log_train ), aes(x = ind, y = values)) +
+  geom_boxplot()
+
+ggplot(train, aes(x = '', y = SalePrice)) +
+  geom_boxplot()
+ggplot(log_train, aes(x = '', y = SalePrice)) +
+  geom_boxplot()
+
+tab_step2 <- tidy( step2 )
+ivs <- tab_step2$term[2:nrow(tab_step2)]
+dv <- 'SalePrice'
+iv_string <- paste( ivs, collapse = " + " )
+reg_formula <- as.formula( paste(dv, iv_string, sep = " ~ " ))
+
+model_pre_step <- lm(reg_formula, data = log_train)
+step3 <- stepAIC(model_pre_step, direction = "both")
+
+tab_step3 <- tidy( step3 )
+tab_step3
+
+tab_step3$p.value.sig <- cut(tab_step3$p.value, breaks=c(-Inf, 0.05, Inf), labels=c("sig","no_sig"))
+
+qplot(data = filter(tab_step3, estimate > 0),
+      x = std.error, y = estimate, color = p.value.sig) +
+  ggtitle('Positive Influence') +
+  theme_bw()
+
+qplot(data = filter(tab_step3, estimate <= 0, term != '(Intercept)'),
+      x = std.error, y = estimate, color = p.value.sig) +
+  ggtitle('Negative Influence') +
+  theme_bw()
+
+winner <- exp( ( predict(step3, newdata = log_test) ) ) - 1
+submission <- tibble(raw_test$Id, winner)
+names(submission) <- c('Id','SalePrice')
+write_csv(submission, 'submission3.csv')
+
+write_csv(x = tab_step3, path = 'model_step_3.csv')
+
+
+
+
+
+
+
+
+

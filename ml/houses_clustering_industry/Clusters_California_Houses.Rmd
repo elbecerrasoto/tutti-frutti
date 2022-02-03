@@ -1,0 +1,134 @@
+---
+title: "Clusters California Houses"
+author: "Emanuel Becerra Soto"
+date: "February 11, 2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Clusters in California Houses
+
+For a new R Chunck
+
+Ctrl + Alt + I
+
+
+```{r Data and Libraries}
+# Importing, Function and Global ------------------------------------------
+
+library(tidyverse)
+library(ggmap)
+library(ggthemes)
+
+# Using Ale Key
+register_google(key='AIzaSyAs5nX1K2RGYQ0Vph_fnG1nEoF_L_Wgj2o')
+
+# Loading the data --------------------------------------------------------
+
+file <- 'cal_houses.csv'
+cal_houses <- read_csv(file)
+
+# Removing 1st col that has no meaning
+cal_houses <- cal_houses %>%
+  select(-(X1))
+
+cal_houses$Cluster <-
+  factor(cal_houses$Cluster, levels = 0:3)
+
+```
+
+```{r San Francisco}
+# Getting the maps --------------------------------------------------------
+
+# San Francisco -----------------------------------------------------------
+
+# san_francisco_map <- get_map('San Francisco, CA', source='stamen',
+#                          zoom=10, maptype='terrain')
+# saveRDS(san_francisco_map, 'san_francisco_map.Rds')
+san_francisco_map  <- readRDS('san_francisco_map.Rds')
+
+p_sf <- ggmap(san_francisco_map)+
+  geom_point(data=cal_houses,
+             aes(x=Longitude,
+                 y=Latitude,
+                 color=Cluster),
+             size=2, alpha=0.2, shape=15)+
+  scale_colour_brewer(palette='Set1')+
+  theme_fivethirtyeight()
+```
+
+```{r Los Angeles}
+# Los Angeles -------------------------------------------------------------
+
+# los_angeles_map <- get_map('Los Angeles, CA', source='stamen',
+#                          zoom=10, maptype='terrain')
+# saveRDS(los_angeles_map, 'los_angeles_map.Rds')
+los_angeles_map  <- readRDS('los_angeles_map.Rds')
+
+p_la <- ggmap(los_angeles_map)+
+  geom_point(data=cal_houses,
+             aes(x=Longitude,
+                 y=Latitude,
+                 color=Cluster),
+             size=2, alpha=0.2, shape=15)+
+  scale_colour_brewer(palette='Set1')+
+  theme_fivethirtyeight()
+```
+
+```{r California}
+# Plotting California -----------------------------------------------------
+
+# california_map <- get_map('California, USA', source='stamen',
+#                           zoom = 6, maptype='terrain')
+# saveRDS(california_map, 'california_map.Rds')
+california_map  <- readRDS('california_map.Rds')
+
+p_cal <- ggmap(california_map)+
+  geom_point(data=cal_houses,
+             aes(x=Longitude,
+                 y=Latitude,
+                 color=Cluster),
+             size=2, alpha=0.2, shape=15)+
+  scale_colour_brewer(palette='Set1')+
+  theme_fivethirtyeight()
+```
+
+```{r Outliers}
+# Plotting Outliers -------------------------------------------------------
+
+condition <- cal_houses$Cluster == 1 | cal_houses$Cluster == 3
+outliers_houses <- cal_houses[condition,]
+# View(outliers_houses)
+
+p_cal_out <- ggmap(california_map)+
+  geom_point(data=outliers_houses,
+             aes(x=Longitude,
+                 y=Latitude,
+                 color=Cluster), size=3, shape=15)+
+  scale_colour_brewer(palette='Set1', drop=FALSE)+
+  theme_fivethirtyeight()
+```
+
+```{r California Points}
+p_cal_points <- ggmap(california_map)+
+  geom_point(data=cal_houses,
+             aes(x=Longitude,
+                 y=Latitude,
+                 color=Cluster),
+             size=2)+
+  scale_colour_brewer(palette='Set1')+
+  theme_fivethirtyeight()
+```
+
+```{r Plotting Everything}
+p_cal
+p_cal_points
+p_cal_out
+p_sf
+p_la
+```
+
+

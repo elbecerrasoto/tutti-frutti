@@ -1,0 +1,8 @@
+#!/bin/bash
+
+bin_file=$PWD/$1
+export_line='export PATH="$PATH:'
+out="$export_line$bin_file\""
+echo -e \\n"$out" >> /$HOME/.bashrc
+source $HOME/.bashrc
+

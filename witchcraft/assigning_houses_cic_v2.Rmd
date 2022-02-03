@@ -1,0 +1,1259 @@
+---
+title: "CIC: School of Witchcraft And Wizardry"
+subtitle: "Which CIC House Do You Belong In?"
+author: "Emanuel Becerra Soto"
+date: "Octubre, 2019"
+output: pdf_document
+---
+
+```{r Libraries, echo=FALSE, message=FALSE, warning=FALSE}
+# Libraries ---------------------------------------------------------------
+library(tidyverse) # Wrangle
+library(ggrepel) # point as text
+library(corrplot) # corrplot
+library(GGally) # scatter matrix
+library(cowplot) # combine plots
+library(REAT) # gini
+library(dendextend) # comparing trees
+library(ggridges) # multiple densities
+library(Rtsne) # t-SNE
+library(magrittr) # set_rownames function
+library(glue) # glue function
+library(ggradar) # Radar plots
+library(ape) # dendrograms
+library(ggalluvial) # alluvial plots
+library(RColorBrewer) # Color Palettes
+```
+
+```{r Functions, echo=FALSE, message=FALSE, warning=FALSE}
+# Functions -------------------------------------------------------------
+
+quantile_plot <- function(data, feature, point_color){
+  library(tidyverse)
+  library(ggrepel)
+  n <- nrow(data)
+  percentiles <- (1:n - 0.5) / n
+  values <- quantile( x = data[[ feature ]] , probs = percentiles)
+  quantiles <- quantile(data[[ feature ]])
+  IQ1 <- quantiles[2]
+  Median <- quantiles[3]
+  Q3 <- quantiles[4]
+  normal_values <- qnorm(seq(0.01,1,0.01), mean = mean(data[[ feature ]]), sd = sd(data[[ feature ]]))
+  unif_values <- qunif(seq(0.01,1,0.01), max = max(data[[ feature ]]), min = min(data[[ feature ]]))
+  percentiles2 <- c(percentiles, 0.25, 0.50, 0.75)
+  values2 <- c(values, IQ1, Median, Q3)
+  to_plot <- tibble(percentiles2, values2)
+  names(to_plot) <- c('percentiles', 'values')
+  theoretical <- tibble(perc = seq(0.01,1,0.01) , normal_values, unif_values)
+  last_three <- (nrow(to_plot) - 2) : nrow(to_plot)
+  theoretical_tidy <- theoretical %>%
+    gather(normal_values, unif_values, key = 'distribution', value = 'values' )
+  ggplot(to_plot, aes(x = percentiles, y = values))+
+    geom_point(size = 2, color = point_color)+
+    geom_line(data = theoretical_tidy,
+              aes(x = perc, y=values, color = distribution),
+              size = 0.5,
+              alpha = 0.5)+
+    geom_point(data = to_plot[ last_three, ],
+               fill = 'red', color = 'red', shape = 23, size = 2.5 )+
+    geom_text_repel( data = to_plot[ last_three, ],
+                     aes(label = c('Q1','Median','Q3')),
+                     vjust
+                     = -5,
+                     segment.size = 0.2)+
+    ggtitle(paste(feature))+
+    scale_color_brewer(type = 'qual', palette = 6, name = 'Distribution', labels=c('Normal', 'Uniform'))
+}
+
+my_tidy <- function(numeric_data){
+  vars <- names(numeric_data)
+  mean_v <- sapply(numeric_data, mean)
+  sd_v <- sapply(numeric_data, sd)
+  tibb_1 <- tibble(variable = vars,
+                   mean = mean_v,
+                   sd = sd_v)
+  tibb_quant <- as_tibble(t(sapply(numeric_data, quantile)))
+  bind_cols(tibb_1, tibb_quant) %>%
+    select(variable, mean, sd, everything()) %>%
+    rename( minimum =`0%`, q1 = `25%`, med = `50%`, q3 = `75%`, maximum = `100%`)
+}
+
+show_palette <- function(colors_hex){
+  pal <- tibble::tibble(colors = colors_hex, scale = 1)
+  ggplot2::ggplot(pal)+
+    geom_bar(aes( x = colors, y = scale, fill = colors), stat = 'identity')+
+    scale_fill_manual(values = pal$colors, guide = FALSE)+
+    coord_flip()+theme_void()+theme(axis.text.y = element_text(size = 14))
+}
+
+hard_labels_by_gini_sd <- function(df, k = 0.8, unlabeled_mark = 'Unsettled'){
+  # Function assign hard labels
+  # df must have Gini col with gini coefs
+  # df must have House col with categorical
+  thereshold_gini <- mean(df$Gini) + k * sd(df$Gini)
+  # Create new column, with unlabeled mark
+  df$SemiSupervised <- unlabeled_mark
+  # Hard Label the instances that meet the thereshold
+  df[df$Gini >= thereshold_gini,]$SemiSupervised <- df[df$Gini >= thereshold_gini,]$House
+  return(df)
+}
+
+add_Cluster_col <- function(df, k, cl_hclust){
+  df$Cluster <- as.character(cutree(cl_hclust, k = k))
+  return(df)
+}
+
+propagate <- function(df){
+  # Propagate function
+  # Input a df with hard labels and clusters
+  # Assume that the hard labels are in SemiSupervised column
+  # Assume that the clusters are in the Cluster column
+  # Propagate
+  clusters <- unique(df$Cluster)
+  # Iterate once for each cluster
+  for (cluster in clusters){
+    # Check members
+    have_winner <- FALSE
+    # Vote
+    winner_table <- filter(df, Cluster == cluster) %>%
+      filter(SemiSupervised != 'Unsettled') %>%
+      group_by(SemiSupervised) %>%
+      summarise(count = n()) %>%
+      filter(count == max(count))
+    if(nrow(winner_table) == 1){
+      have_winner <- TRUE
+    }
+    # Propagate the label
+    # Do not override already given labels
+    if(have_winner){
+      winner_label <- winner_table$SemiSupervised
+      # Filter by cluster again
+      # & vectorized, && unvectorized
+      # Check size
+      target_group_size <-
+        length(df[df$SemiSupervised == 'Unsettled' & df$Cluster == cluster, ]$SemiSupervised)
+      # Check if are propagable instances
+      if( target_group_size > 0 ){
+        # Propagate the label
+        df[df$SemiSupervised == 'Unsettled' & df$Cluster == cluster, ]$SemiSupervised <- rep(winner_label, target_group_size)
+      }
+    }
+    # Else next cluster
+    else{
+      next
+    }
+  }
+  return(df)
+}
+
+```
+
+```{r Global Settings, echo=FALSE, message=FALSE, warning=FALSE}
+# Global Settings ---------------------------------------------------------
+
+# Plotting theme
+theme_set(theme_minimal_grid(24))
+
+# Random seed
+set.seed(5076)
+
+dig_sig = 3
+# Significant digits
+# to how when printing tibbles
+# Printing in terminal
+options(pillar.sigfig = dig_sig)
+
+# Significant digits for printing in
+# knirt
+# knirt::kable(x, digi)
+
+# Color Palettes for the plotting
+colors_gryf <- c('#E6474C', '#9E2D24', '#E1373D', '#951918', '#FF413E') 
+colors_slyth <- c('#3F9E64', '#25633D', '#5C947C', '#4C7969', '#53A33C')
+colors_raven <- c('#642A8A', '#0B446E', '#1272AD', '#91B2CA', '#6D5AFF')
+colors_huff <- c('#FFF599', '#F2C742', '#E7B546', '#E9C30F', '#FFF94D')
+
+# show_palette(c(colors_gryf, colors_slyth, colors_raven, colors_huff))
+
+color_gryf <- colors_gryf[5]
+color_slyth <- colors_slyth[5]
+color_raven <- colors_raven[5]
+color_huff <- colors_huff[4]
+
+color_by_alphabetical <- c(color_gryf, color_huff, color_raven, color_slyth)
+
+# Thereshold for purity
+k_sd_purity = 0.8
+```
+
+```{r Loading the Data, echo=FALSE, message=FALSE, warning=FALSE}
+# Loading the Data --------------------------------------------------------
+
+file <- 'DATA/all_cic_cool_hector.csv'
+houses <- read_csv(file)
+
+house_gath <- gather(houses, key = 'House', value = 'prob', -Nombre)
+
+houses <- houses %>%
+  gather(key = 'House', value = 'Max', -Nombre) %>%
+  group_by(Nombre) %>%
+  slice(which.max(Max)) %>%
+  left_join(houses, by = 'Nombre') %>%
+  ungroup()
+
+m_houses <- as.matrix(houses[-(1:3)])
+rownames(m_houses) <- houses[['Nombre']]
+
+# Calculating gini Index
+houses$Gini <- apply(m_houses, MARGIN = 1, FUN = gini)
+houses <- houses %>% select(Nombre, House, Gryffindor, Slytherin, Ravenclaw, Hufflepuff, Gini, Max)
+```
+
+# Introduction
+
+In this document the relationships between the results of the internet based quiz:
+_What is your Hogwarts house percentage?_ would be explored. Initially an
+exploratory data analysis would be performed. Next, an attempt to
+develop a methodology to assign people to their corresponding Hogwarts Houses will be made.  
+
+Two perspectives would be analyzed,
+should a new student be assigned to the House to which her has the most affinity or
+the one with more people like her.  
+
+The data comes from a cohort of `r nrow(houses)` students
+from the Computer Research Center of the
+National Polytechnic Institute (CIC-IPN).  
+
+The complete quiz could be found at:
+https://www.buzzfeed.com/eleanorbate/accurate-af-sorting-quiz
+
+***
+
+**Gryffindor** _Values courage, bravery, nerve, and chivalry._
+_Gryffindor's mascot is the lion, and its colors are scarlet and gold._
+
+**Hufflepuff** _Values hard work, patience, justice, and loyalty._
+_The house mascot is the badger, and canary yellow and black are its colors._
+
+**Ravenclaw** _Values intelligence, creativity, learning, and wit._
+_The house mascot is an eagle and the house colours are blue and bronze (blue and grey in the films)._
+
+**Slytherin** _Values ambition, cunning, leadership, and resourcefulness._
+_The house mascot of Slytherin is the serpent, and the house colours are green and silver._
+
+**The Sorting Hat** _Is a sapient artefact used at Hogwarts, which uses Legilimency (the ability to read minds) to determine which of the four school houses (Gryffindor, Hufflepuff, Ravenclaw or Slytherin) each new student is to be assigned for their years at Hogwarts._
+_The hat resembles a dilapidated conical leather wide-brimmed wizard's hat, with folds and tears that make it appear to have eyes and a mouth. During the opening banquet at the beginning of each school year, the Hat is placed on every first-year student's head._
+_The Hat announces its choice aloud, and the student joins the selected house. The Hat speaks to the student while they're being sorted and is willing to take the student's preferences into account when it makes its decision, still sometimes it does not have the need to do so._
+
+***
+
+\newpage
+
+## Summary Statistics
+
+#### Data
+
+```{r Data Table, echo=FALSE, message=FALSE, warning=FALSE}
+# Print the table
+printing <- houses %>%
+  select(Nombre, Gini, Gryffindor, Slytherin, Ravenclaw, Hufflepuff) %>%
+  arrange(desc(Gini))
+
+knitr::kable(printing, digits = dig_sig,
+             caption = "People Preferences sorted by Gini Index")
+```
+
+\newpage
+
+#### Summary Table
+
+```{r Summary Table, echo=FALSE, message=FALSE, warning=FALSE}
+# Print the summary table
+printing <- my_tidy(houses[-(1:2)]) %>%
+  mutate_if(is.double, round, 3)
+knitr::kable(printing, digitis = dig_sig,
+             caption = "Summary Statistics")
+```
+
+\newpage
+
+#### Scatter Plot Matrix
+
+```{r Scatter Plot Matrix, echo=FALSE, message=FALSE, warning=FALSE, fig.width=14, fig.height=14}
+# Scatter Plot Matrix
+ggpairs(houses, columns = 3:ncol(houses))+
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank())+
+  labs(caption = 'author: Becerra-Soto E.')
+```
+
+\newpage
+
+#### Smoothed histograms of House percentage
+
+```{r Smoothed Hists, echo=FALSE, message=FALSE, warning=FALSE, fig.width=14, fig.height=16}
+# Smoothed histograms of house percentage
+ggplot(house_gath, aes(x = prob, y = House))+
+  geom_density_ridges(aes(fill = House, color = House), alpha = 0.6)+
+  scale_fill_manual(values = c(color_gryf, color_huff,
+                               color_raven, color_slyth))+
+  scale_color_manual(values = c(color_gryf, color_huff,
+                                color_raven, color_slyth))+
+  labs(title = 'Smoothed histograms of House Percentage',
+       caption = 'author: Becerra-Soto E.',
+       x = '',
+       y = '')+guides(fill = FALSE, color = FALSE)
+```
+
+\newpage
+
+#### Empirical Cumulative Distributions
+
+```{r Cumulative, echo=FALSE, message=FALSE, warning=FALSE, fig.width=14, fig.height=16}
+# Cumulative Plot
+p1 <- quantile_plot(houses, 'Gryffindor', point_color = color_gryf)+
+  coord_flip()+labs(x = '', y = '')+guides(color = FALSE)
+p2 <- quantile_plot(houses, 'Slytherin', point_color = color_slyth)+
+  coord_flip()+labs(x = '', y = '')+guides(color = FALSE)
+p3 <- quantile_plot(houses, 'Ravenclaw', point_color = color_raven)+
+  coord_flip()+labs(x = '', y = '')+guides(color = FALSE)
+p4 <- quantile_plot(houses, 'Hufflepuff', point_color = color_huff)+
+  coord_flip()+labs(x = '', y = '')+guides(color = FALSE)
+# Cumulative Plot 2x2
+p5 <- plot_grid(p1, p2, p3, p4)
+p6 <- add_sub(p5, 'author: Becerra-Soto E.', hjust = -1.5, size = 10)
+ggdraw(p6)
+# ggsave('cumulatives_houses.svg', p6,
+#         units = 'cm', width = 26, height = 16)
+```
+
+\newpage
+
+#### Bar Plot by Person
+
+```{r Bar Plot by Person, echo=FALSE, message=FALSE, warning=FALSE, fig.width=14, fig.height=16}
+# Bar per name, stacked
+ggplot(house_gath)+
+  geom_bar(aes(x = Nombre, y = prob, fill = House),
+           stat = 'identity')+
+  scale_fill_manual(values = c(color_gryf, color_huff, color_raven, color_slyth))+
+  coord_flip()+
+  labs(title = 'Percentage per Person',
+       caption = 'author: Becerra-Soto E.',
+       x = '',
+       y = '')
+```
+
+\newpage
+
+#### Bar Plot by House
+
+```{r Bar Plot by House, echo=FALSE, message=FALSE, warning=FALSE, fig.width=14, fig.height=16}
+# Bar plot per House                                                                                                                                                              
+splitted_by_house <- house_gath %>% 
+  group_by(House) %>%
+  group_split()
+# Plotting each houses separatly
+l_plots <- list()
+i <- 0
+colors_4 <- c(color_gryf, color_huff, color_raven, color_slyth)
+names_4 <- c('Gryffindor','Hufflepuff','Ravenclaw','Slytherin')
+for (tb in splitted_by_house){
+  i <- i + 1
+  l_plots[[i]] <- tb %>%
+    ggplot(aes(x = reorder(Nombre, prob), y = prob))+
+    geom_bar(stat = 'identity', fill = colors_4[i])+
+    coord_flip()+xlab('')+ylab('')+ggtitle(names_4[i])+
+    theme_minimal_grid(16)
+}
+# Putting all plots together
+p <- plot_grid(l_plots[[1]], l_plots[[2]], l_plots[[3]], l_plots[[4]])
+p2 <- add_sub(p, 'author: Becerra-Soto E.', hjust = -1.5, size = 10)
+ggdraw(p2)
+```
+
+\newpage
+
+# How to assign Houses?
+
+The point of the quiz is to choose a House for the person taking it.  
+The output of the quiz are four different numbers that are to be interpreted as
+(I believe) the percentage of the answers that agree to each House.
+In particular, for person _x_, 35%, 12%, 24%, 29% could be a valid output.  
+
+The quiz assigns a House just by taking the one with the maximum
+percentage. So a natural question arises, is this a sensible method to do it?  
+
+It seems like so, but also the House's Percentages could be not far away
+from each other making the selection non-obvious.
+Not to mention that by taking the maximum percentage we are neglecting all
+the other information provided by the remaining categories.  
+
+So first let's find out if the selection criteria used
+by the quiz does relatively well. To do that we are
+going to label the data and plot it using dimensional reduction techniques,
+to "look-up" for patterns, this is by no means a formal technique as we are
+just assessing by "eye" our data.  
+
+In order to perform something more
+elaborated we would need to define evaluation metrics, but this is
+difficult as we don't know the true Houses for the people,
+as we, sadly, have never been in Hogwarts School or the Wizarding World.  
+
+The dimensional reduction techniques that would be used are:
+T-distributed Stochastic Neighbor Embedding (t-SNE) and
+Principal Component Analysis (PCA).  
+
+Basically four dimensions (one per house) would be represented just by two,
+in favor of data visualization and spotting patterns by "eye".  
+
+```{r Calculating Low Dimensional Representations, echo=FALSE, message=FALSE, warning=FALSE}
+# Calculating Low Dimensional Representations -------------------------------------------
+
+# Calculate t-SNE
+tsne_re <- Rtsne(m_houses, perplexity = 6)
+# New representation matrix
+houses_tsne <- bind_cols(houses['Nombre'], as_tibble(tsne_re$Y))
+
+# Calculate PCA
+pca_re <- prcomp(m_houses)
+var_per_comp <- pca_re$sdev^2
+added_var_per_comp <- var_per_comp / sum(var_per_comp)
+var_cum_sum <- cumsum(added_var_per_comp)
+PCA1_explained <- round(added_var_per_comp[1]*100, 1)
+PCA2_explained <- round(added_var_per_comp[2]*100, 1)
+# New representation matrix
+houses_pca <- bind_cols(select(houses, Nombre),
+                        as_tibble(pca_re$x))
+```
+
+\newpage
+
+## Direct Approach
+
+In this approach we just take the maximum percentage
+and assign that House to that person.
+
+#### Direct Approach t-SNE
+
+Plotting each person onto the new t-SNE axes gives the following plot:
+
+```{r tsne Dir, echo=FALSE, message=FALSE, warning=FALSE, fig.width=18, fig.height=14}
+# Assigning Houses Max Approach -------------------------------------------
+
+# Mapping into t-sne
+p <- houses_tsne %>%
+  mutate(House = houses$House) %>%
+  ggplot(aes(x = V1, y = V2))+
+    geom_point(aes(color = House), size = 6)+
+    geom_text_repel(aes(label = Nombre), size = 6)+
+    labs(title = 'Assigning Houses: Max Frecuency',
+         subtitle = 't-SNE',
+         x = '',
+         y = '',
+         caption = 'author: Becerra-Soto E.',
+         color = '')+
+    scale_color_manual(values = c(color_gryf, color_huff, color_raven, color_slyth))
+ggdraw(p)+
+  draw_image('images/all_houses.png',
+             x = 1.03, y = 0.88, hjust = 1, vjust = 1,
+             width = 0.23, height = 0.23)
+```
+
+\newpage
+
+#### Direct Approach PCA
+
+Plotting each person onto the new PCA axes gives the following plot:
+
+```{r PCA Dir, echo=FALSE, message=FALSE, warning=FALSE, fig.width=18, fig.height=14}
+# Mapping into PCA
+p <- houses_pca %>%
+  mutate(House = houses$House) %>%
+  ggplot(aes(x = PC1, y = PC2))+
+  geom_point(aes(color = House), size = 6)+
+  geom_text_repel(aes(label = Nombre), size = 6)+
+  xlab(paste('PCA1    ', 'explained variance ', '%', PCA1_explained, sep = ''))+
+  ylab(paste('PCA2    ', 'explained variance ', '%', PCA2_explained, sep = ''))+
+  scale_color_manual(values = c(color_gryf, color_huff, color_raven, color_slyth))+
+  labs(title = 'Assigning Houses: Max Frecuency',
+       subtitle = 'PCA',
+       caption = 'author: Becerra-Soto E.',
+       color = '')
+ggdraw(p)+
+  draw_image('images/all_houses.png',
+             x = 1.03, y = 0.88, hjust = 1, vjust = 1,
+             width = 0.23, height = 0.23)
+```
+
+It seems that the Direct Approach meets the "eye test" as labels with the same House lie close to each other.  
+
+Let us try something else.
+
+\newpage
+
+## Purity Approach (Semi-supervised)
+
+One of the criticism of the Direct Approach was that it
+takes the House with the maximum percentage even if there are
+others with a close percentage to the winner case. For instance one extreme case
+is that each House gets 33%. How to determine a House on such a case?  
+
+One idea of assigning Houses is as follows:  
+
+1. Assume that each person has a variable component of how appropriate is to be
+assigned onto a given House. So there isn't a definitive correct House to belong to.
+
+2. Assume that we don't know the true components of each person, but
+the test is a good proxy for it.
+
+3. Somehow calculating the "purity" of each person,
+where purity is seen as a score of how much a given person
+has a strong component in one House and low components in the remaining ones.
+For example a person with 100% in one house
+and 0% in the others should have a huge purity score.
+
+4. Then establish a purity threshold and assign the House with the maximum percentage
+to the persons that meet the threshold. So only the most "pure" people get a House,
+because there are the ones with the clearer signal on which House to belong to.
+For the sake of clarity let us call these people "seeds".
+
+5. Run any clustering algorithm over the data and then start labeling non-seed people.
+An unlabeled person gets the label of the most common House (seeds labels) in their same cluster.
+In case of a tie leave the given person unlabeled. In case of a cluster without any seed, leave
+everyone in the cluster unlabeled.
+
+6. Furthermore a label could be forced onto all persons if we iteratively start reducing the number
+of clusters, as when the number of clusters is only one it is guaranteed that any data point is in the 
+same cluster as a seed or a previously labeled person. So we iteratively start reducing the number of clusters
+and taking a vote at each iteration assigning to any unlabeled point the most common House within the cluster.
+Then stop when all the points have been labeled. Breaking ties arbitrarily when the number of clusters is one (the last iteration).
+
+So, to implement the former idea of assigning houses it is necessary to pinpoint some details.
+First a purity score needs to be chosen, a threshold established and a clustering algorithm selected.  
+
+For our luck the Gini Index used to measure income inequality in economics meets the criteria for a purity score.
+The Gini Index is 0 at equality between features and 1 at maximum inequality. As we are interested in
+maximum inequality, for our case maximum purity, the highest the Gini Index the highest the purity.  
+
+For a threshold, we want to choose one that retrieves the top of the observed purity distribution (Gini).
+So we are going to take some k standard deviations from the mean as a threshold.
+Empirically, as we only have a few data points, we notice that k = 0.8 works well.  
+
+As we only have a few data points the hierarchical clustering techniques seem appropriate.
+For the sake of comparison we are going to use two different clustering algorithms,
+that assume relatively different things.  
+
+* The complete linkage method finds similar clusters. This method is also called the diameter or maximum method.
+In this method, we consider similarity of the furthest pair. That is, the distance between one cluster and another cluster is taken to be equal to the longest distance from any member of one cluster to any member of the other cluster. It tends to produce more compact clusters.
+One drawback of this method is that outliers can cause close groups to be merged later than what is optimal. 
+
+* Ward's minimum variance method aims at finding compact, spherical clusters.
+Ward’s method aims to minimize the total within-cluster variance. At each step the pair of clusters with minimum between-cluster distance are merged. In other words, it forms clusters in a manner that minimizes the loss associated with each cluster. At each step, the union of every possible cluster pair is considered and the two clusters whose merger results in minimum increase in information loss are combined. Here, information loss is defined by Ward in terms of an error sum-of-squares criterion (ESS).
+
+So let us implement the previously stated idea.
+
+\newpage
+
+### Complete Linkage Clustering
+
+Using Complete Linkage Clustering we get the following results:
+
+```{r Complete Linkage, echo=FALSE, message=FALSE}
+# Complete Linkage clustering ---------------------------------------------
+
+# Starting with some hard labeled data
+semi_houses <- houses %>%
+  hard_labels_by_gini_sd(k = k_sd_purity)
+
+# Complete Linkage Clustering
+cl_complete <- houses %>%
+  select(-Nombre, -House, -Gini, -Max) %>%
+  as.matrix() %>%
+  set_rownames(houses$Nombre) %>%
+  dist(method = 'euclidean') %>%
+  hclust(method = 'complete')
+# plot(cl_complete)
+
+# Save in between propagations
+k_stamp_semi <- list()  
+k_stamp_semi[['seed']] <- semi_houses
+
+# Sequential propagation
+try_these_ks <- seq(16, 1, -1)
+for(k in try_these_ks){
+  semi_houses <- semi_houses %>%
+    add_Cluster_col(k = k, cl_complete) %>%
+    propagate()
+  # Save the data at each iteration
+  k_stamp_semi[[glue('k', k)]] <- semi_houses
+}
+```
+
+#### Complete Linkage t-SNE
+
+```{r tsne Comp, echo=FALSE, message=FALSE, warning=FALSE, fig.width=18, fig.height=14}
+# Plotting SemiSupervised Complete Linkage
+
+# Mapping into t-sne
+p <- houses_tsne %>%
+  mutate(House = semi_houses$SemiSupervised) %>%
+  ggplot(aes(x = V1, y = V2))+
+  geom_point(aes(color = House), size = 6)+
+  geom_text_repel(aes(label = Nombre), size = 6)+
+  labs(title = 'Assigning Houses: SemiSupervised',
+       subtitle = 't-SNE, Clustering: Complete Linkage',
+       x = '',
+       y = '',
+       caption = 'author: Becerra-Soto E.',
+       color = '')+
+  scale_color_manual(values = c(color_gryf, color_huff, color_raven, color_slyth))
+ggdraw(p)+
+  draw_image('images/all_houses.png',
+             x = 1.03, y = 0.88, hjust = 1, vjust = 1,
+             width = 0.23, height = 0.23)
+```
+
+\newpage
+
+#### Complete Linkage PCA
+
+```{r PCA Comp, echo=FALSE, message=FALSE, warning=FALSE, fig.width=18, fig.height=14}
+# Mapping into PCA
+p <- houses_pca %>%
+  mutate(House = semi_houses$SemiSupervised) %>%
+  ggplot(aes(x = PC1, y = PC2))+
+  geom_point(aes(color = House), size = 6)+
+  geom_text_repel(aes(label = Nombre), size = 6)+
+  xlab(paste('PCA1    ', 'explained variance ', '%', PCA1_explained, sep = ''))+
+  ylab(paste('PCA2    ', 'explained variance ', '%', PCA2_explained, sep = ''))+
+  scale_color_manual(values = c(color_gryf, color_huff, color_raven, color_slyth))+
+  labs(title = 'Assigning Houses: SemiSupervised',
+       subtitle = 'PCA, Clustering: Complete Linkage',
+       caption = 'author: Becerra-Soto E.',
+       color = '')
+ggdraw(p)+
+  draw_image('images/all_houses.png',
+             x = 1.03, y = 0.88, hjust = 1, vjust = 1,
+             width = 0.23, height = 0.23)
+```
+
+\newpage
+
+#### Epochs Complete Linkage t-SNE
+
+```{r epochs tsne Comp, echo=FALSE, message=FALSE, warning=FALSE, fig.width=14, fig.height=18}
+# Plotting the propagation Linkage Clustering
+names_2_plot <- c('seed', 'k12', 'k10',
+                  'k9', 'k8', 'k7',
+                  'k6', 'k5', 'k4') 
+box_with_plots <- list()
+for (Name in names_2_plot){
+  box_with_plots[[Name]] <- bind_cols(select(k_stamp_semi[[Name]], Nombre, SemiSupervised), as_tibble(tsne_re$Y)) %>%
+    ggplot(aes(x = V1, y = V2))+
+    geom_point(aes(color = SemiSupervised), size = 3)+
+    labs(title = '')+
+    scale_color_manual(values = c(color_gryf, color_huff, color_raven, color_slyth, 'gray60'))+
+    guides(color=FALSE)+xlab('')+ylab('')+
+    theme(axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.text.y = element_blank(),
+          axis.ticks.y = element_blank())
+}
+p <- plot_grid(plotlist = box_with_plots, labels = names_2_plot)
+p_2_save <- add_sub(p, 'author: Becerra-Soto E.', hjust = -1.5, size = 10)
+#ggsave('propagation.svg', plot = ggdraw(p_2_save), units = 'cm', width = 54, height = 38)
+ggdraw(p_2_save)
+```
+
+\newpage
+
+### Ward Clustering
+
+Using Ward Clustering we get the following results:
+
+```{r Ward, echo=FALSE, message=FALSE, warning=FALSE}
+# Ward Clustering ---------------------------------------------------------
+
+# Starting with some hard labeled data
+semi_houses2 <- houses %>%
+  hard_labels_by_gini_sd(k = k_sd_purity)
+
+# Ward Clustering
+cl_ward <- houses %>%
+  select(-Nombre, -House, -Gini, -Max) %>%
+  as.matrix() %>%
+  set_rownames(houses$Nombre) %>%
+  dist(method = 'euclidean') %>%
+  hclust(method = 'ward.D')
+# plot(cl_complete)
+# Save in between propagations
+k_stamp_semi <- list()  
+k_stamp_semi[['seed']] <- semi_houses2
+
+# Sequential propagation
+try_these_ks <- seq(16, 1, -1)
+for(k in try_these_ks){
+  semi_houses2 <- semi_houses2 %>%
+    add_Cluster_col(k = k, cl_ward) %>%
+    propagate()
+  # Save the data at each iteration
+  k_stamp_semi[[glue('k', k)]] <- semi_houses2
+}
+```
+
+#### Ward t-SNE
+
+```{r tsne Ward, echo=FALSE, message=FALSE, warning=FALSE, fig.width=18, fig.height=14}
+# Mapping into t-sne
+p <- houses_tsne %>%
+  mutate(House = semi_houses2$SemiSupervised) %>%
+  ggplot(aes(x = V1, y = V2))+
+  geom_point(aes(color = House), size = 6)+
+  geom_text_repel(aes(label = Nombre), size = 6)+
+  labs(title = 'Assigning Houses: SemiSupervised',
+       subtitle = 't-SNE, Clustering: Ward',
+       x = '',
+       y = '',
+       caption = 'author: Becerra-Soto E.',
+       color = '')+
+  scale_color_manual(values = c(color_gryf, color_huff, color_raven, color_slyth))
+ggdraw(p)+
+  draw_image('images/all_houses.png',
+             x = 1.03, y = 0.88, hjust = 1, vjust = 1,
+             width = 0.23, height = 0.23)
+```
+
+\newpage
+
+#### Ward PCA
+
+```{r PCA Ward, echo=FALSE, message=FALSE, warning=FALSE, fig.width=18, fig.height=14}
+# Mapping into PCA
+p <- houses_pca %>%
+  mutate(House = semi_houses2$SemiSupervised) %>%
+  ggplot(aes(x = PC1, y = PC2))+
+  geom_point(aes(color = House), size = 6)+
+  geom_text_repel(aes(label = Nombre), size = 6)+
+  xlab(paste('PCA1    ', 'explained variance ', '%', PCA1_explained, sep = ''))+
+  ylab(paste('PCA2    ', 'explained variance ', '%', PCA2_explained, sep = ''))+
+  scale_color_manual(values = c(color_gryf, color_huff, color_raven, color_slyth))+
+  labs(title = 'Assigning Houses: SemiSupervised',
+       subtitle = 'PCA, Clustering: Ward',
+       caption = 'author: Becerra-Soto E.',
+       color = '')
+ggdraw(p)+
+  draw_image('images/all_houses.png',
+             x = 1.03, y = 0.88, hjust = 1, vjust = 1,
+             width = 0.23, height = 0.23)
+```
+
+\newpage
+
+#### Epochs Ward t-SNE
+
+```{r epochs Ward, echo=FALSE, message=FALSE, warning=FALSE, fig.width=14, fig.height=16}
+# Plotting the propagation Ward clustering
+names_2_plot <- c('seed', 'k12', 'k10',
+                  'k9', 'k8', 'k7',
+                  'k6', 'k5', 'k4') 
+box_with_plots2 <- list()
+for (Name in names_2_plot){
+  box_with_plots2[[Name]] <- bind_cols(select(k_stamp_semi[[Name]], Nombre, SemiSupervised), as_tibble(tsne_re$Y)) %>%
+    ggplot(aes(x = V1, y = V2))+
+    geom_point(aes(color = SemiSupervised), size = 3)+
+    labs(title = '')+
+    scale_color_manual(values = c(color_gryf, color_huff, color_raven, color_slyth, 'gray60'))+
+    guides(color=FALSE)+xlab('')+ylab('')+
+    theme(axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.text.y = element_blank(),
+          axis.ticks.y = element_blank())
+}
+p <- plot_grid(plotlist = box_with_plots2, labels = names_2_plot)
+p_2_save <- add_sub(p, 'author: Becerra-Soto E.', hjust = -1.5, size = 10)
+#ggsave('propagation.svg', plot = ggdraw(p_2_save), units = 'cm', width = 54, height = 38)
+ggdraw(p_2_save)
+```
+
+\newpage
+
+#### Complete Linkage dendrogram
+
+```{r Complete Fan, echo=FALSE, message=FALSE, warning=FALSE, fig.width=14, fig.height=12}
+# Fan
+plot(as.phylo(cl_complete), type = "fan")
+title('Clustering: Complete Linkage',
+      sub = 'author: Becerra-Soto E.')
+```
+
+\newpage
+
+#### Ward dendrogram
+
+```{r Ward Fan, echo=FALSE, message=FALSE, warning=FALSE, fig.width=14, fig.height=12}
+# Fan
+plot(as.phylo(cl_ward), type = "fan")
+title('Clustering: Ward',
+      sub = 'author: Becerra-Soto E.')
+```
+
+\newpage
+
+#### Comparision of the two dendrograms
+
+```{r Comparing, echo=FALSE, message=FALSE, warning=FALSE, fig.width=14, fig.height=16}
+# Complete vs Ward
+hclust_1 <- cl_complete
+hclust_2 <- cl_ward
+dend1 <- as.dendrogram(hclust_1)
+dend2 <- as.dendrogram(hclust_2)
+tanglegram(dend1, dend2,
+  highlight_distinct_edges = FALSE, # Turn-off dashed lines
+  common_subtrees_color_lines = FALSE, # Turn-off line colors
+  common_subtrees_color_branches = TRUE, # Color common branches
+  main = paste("Entanglement =", round(entanglement(dend1, dend2), 2)))
+title(sub = 'author: Becerra-Soto E.',
+      cex.sub = 0.8)
+```
+
+To the left is the complete linkage dendrogram and to the right is the ward dendrogram.
+Entanglement is a measure of dissimilarity between dendrograms, where 0 means that they are equal,
+up to 1 where they are totally different.
+
+\newpage
+
+# Results
+
+```{r Results Table, echo=FALSE, message=FALSE, warning=FALSE}
+# Max
+max_houses <- houses
+# Comple
+complete_houses <- semi_houses
+# Ward
+ward_houses <- semi_houses2
+# Create the results tibble
+sorting_hat_results <- tibble(person = houses$Nombre, gini = houses$Gini, max = max_houses$House,
+       complete = complete_houses$SemiSupervised,
+       ward = ward_houses$SemiSupervised) %>%
+  arrange(desc(gini))
+
+# A results tibble v2
+sorting_hat_results_v2 <- inner_join(sorting_hat_results, houses, by = c('person' = 'Nombre')) %>%
+  select(1:5, Gryffindor, Slytherin, Ravenclaw, Hufflepuff) %>%
+  rename(gryffindor = Gryffindor, hufflepuff = Hufflepuff,
+         ravenclaw = Ravenclaw, slytherin = Slytherin) %>%
+  select(1, gryffindor, hufflepuff, ravenclaw, slytherin, everything())
+
+printing <- sorting_hat_results_v2 %>%
+  select(person, gini, max, complete, ward)
+
+knitr::kable(printing, digits = dig_sig,
+             caption = "Different Assignation Methodologies")
+```
+
+\newpage
+
+#### Alluvial Diagram of Results
+
+```{r Alluvium, echo=FALSE, message=FALSE, warning=FALSE, fig.width=14, fig.height=16}
+# Alluvial Diagram
+method_levels <- c('max', 'complete', 'ward')
+sorting_hat_results %>%
+  gather(key = 'approach', value = 'house',
+         -gini, -person) %>%
+  group_by(approach, house) %>%
+  mutate(freq = 1) %>%
+  ggplot(aes(x = parse_factor(approach, levels = method_levels),
+             stratum = house,
+             alluvium = person,
+             y = freq,
+             fill = house,
+             label = house)) +
+  scale_x_discrete(expand = c(.1, .1), label = c('Max', 'Complete', 'Ward')) +
+  geom_flow(alpha = 0.6) +
+  geom_stratum(alpha = 0.8, aes(color = house)) +
+  geom_text(stat = "stratum", size = 9) +
+  theme(legend.position = "none") +
+  labs(title = 'Sorting Hat Results by Method',
+       x = '', y = '',
+       caption = 'author: Becerra-Soto E.')+
+  scale_fill_manual(values = color_by_alphabetical)+
+  scale_color_manual(values = color_by_alphabetical)+
+  theme(panel.grid.major.x = element_line(colour = "grey70",size = 0), 
+        panel.grid.minor.x = element_line(colour = "grey70",size = 0))
+```
+
+\newpage
+
+## Plotting Results for Ward Clustering
+
+#### Aggregation of Components by House
+
+```{r Aggregation Radar, echo=FALSE, message=FALSE, warning=FALSE, fig.width=14, fig.height=16}
+# Radar by house aggregation
+
+sorting_hat_results_v2 %>%
+  group_by(ward) %>%
+  summarise(gryf_comp = mean(gryffindor),
+            huff_comp = mean(hufflepuff),
+            raven_comp = mean(ravenclaw),
+            slytherin_comp = mean(slytherin)) %>%
+  ggradar(values.radar = c('', '50%', ''),
+          base.size = 20,
+          group.line.width = 1,
+          group.point.size = 3,
+          axis.labels = c('G','H','R','S'),
+          axis.label.size = 8)+
+  scale_color_manual(values = color_by_alphabetical)+
+  labs(title = "Component by House",
+       subtitle = 'Approach: SemiSupervised Ward',
+       caption = 'author: Becerra-Soto E.')
+```
+
+```{r Calculating All the Radars, echo=FALSE, message=FALSE, warning=FALSE}
+# Radar Plots of Ward Clustering all people
+
+tb_temp <- sorting_hat_results_v2 %>%
+  filter(ward == 'Gryffindor') %>%
+  select(1:5)
+people_colors <- colorRampPalette(brewer.pal(9,'Reds')) (nrow(tb_temp))
+radar_gryf <- ggradar(tb_temp,
+        values.radar = c('', '', ''),
+        group.line.width = 0.8,
+        group.point.size = 1.2,
+        background.circle.colour = 'gray10',
+        background.circle.transparency = 0.7,
+        gridline.min.colour = 'black',
+        gridline.mid.colour = color_gryf,
+        gridline.max.colour = 'white',
+        axis.labels = c('G','H','R','S'),
+        axis.label.size = 8,
+        axis.line.colour = "white")+
+  scale_color_manual(values = people_colors)+
+  guides(color=FALSE)+
+  labs(title = "Gryffindor's Students Profile",
+       subtitle = 'Approach: SemiSupervised Ward',
+       caption = 'author: Becerra-Soto E.')
+#radar_gryf
+
+tb_temp <- sorting_hat_results_v2 %>%
+  filter(ward == 'Hufflepuff') %>%
+  select(1:5)
+people_colors <- colorRampPalette(brewer.pal(9,'YlOrBr')) (nrow(tb_temp))
+radar_huff <- ggradar(tb_temp,
+                   values.radar = c('', '', ''),
+                   group.line.width = 0.8,
+                   group.point.size = 1.2,
+                   background.circle.colour = 'gray10',
+                   background.circle.transparency = 0.7,
+                   gridline.min.colour = 'black',
+                   gridline.mid.colour = color_huff,
+                   gridline.max.colour = 'white',
+                   axis.labels = c('G','H','R','S'),
+                   axis.label.size = 8,
+                   axis.line.colour = "white")+
+  scale_color_manual(values = people_colors)+
+  guides(color=FALSE)+
+  labs(title = "Hufflepuf's Students Profile",
+       subtitle = 'Approach: SemiSupervised Ward',
+       caption = 'author: Becerra-Soto E.')
+#radar_huff
+
+tb_temp <- sorting_hat_results_v2 %>%
+  filter(ward == 'Ravenclaw') %>%
+  select(1:5)
+people_colors <- colorRampPalette(brewer.pal(9,'Blues')) (nrow(tb_temp))
+radar_raven <- ggradar(tb_temp,
+                   values.radar = c('', '', ''),
+                   group.line.width = 0.8,
+                   group.point.size = 1.2,
+                   background.circle.colour = 'gray10',
+                   background.circle.transparency = 0.7,
+                   gridline.min.colour = 'black',
+                   gridline.mid.colour = color_raven,
+                   gridline.max.colour = 'white',
+                   axis.labels = c('G','H','R','S'),
+                   axis.label.size = 8,
+                   axis.line.colour = "white")+
+  scale_color_manual(values = people_colors)+
+  guides(color=FALSE)+
+  labs(title = "Ravenclaw's Students Profile",
+       subtitle = 'Approach: SemiSupervised Ward',
+       caption = 'author: Becerra-Soto E.')
+#radar_raven
+
+tb_temp <- sorting_hat_results_v2 %>%
+  filter(ward == 'Slytherin') %>%
+  select(1:5)
+people_colors <- colorRampPalette(brewer.pal(9,'Greens')) (nrow(tb_temp))
+radar_slyth <- ggradar(tb_temp,
+                   values.radar = c('', '', ''),
+                   group.line.width = 0.8,
+                   group.point.size = 1.2,
+                   background.circle.colour = 'gray10',
+                   background.circle.transparency = 0.7,
+                   gridline.min.colour = 'black',
+                   gridline.mid.colour = color_slyth,
+                   gridline.max.colour = 'white',
+                   axis.labels = c('G','H','R','S'),
+                   axis.label.size = 8,
+                   axis.line.colour = "white")+
+  scale_color_manual(values = people_colors)+
+  guides(color=FALSE)+
+  labs(title = "Slytherin's Students Profile",
+       subtitle = 'Approach: SemiSupervised Ward',
+       caption = 'author: Becerra-Soto E.')
+#radar_slyth
+
+# Putting all plots together
+# p <- plot_grid(radar_gryf, radar_huff, radar_raven, radar_slyth)
+# p
+```
+
+\newpage
+
+#### Gryffindor Radar
+
+```{r gryf Radar, echo=FALSE, message=FALSE, warning=FALSE, fig.width=12, fig.height=14}
+radar_gryf
+```
+
+\newpage
+
+####  Radar Hufflepuff
+
+```{r huff Radar, echo=FALSE, message=FALSE, warning=FALSE, fig.width=12, fig.height=14}
+radar_huff
+```
+
+\newpage
+
+####  Radar Ravenclaw
+
+```{r raven Radar, echo=FALSE, message=FALSE, warning=FALSE, fig.width=12, fig.height=14}
+radar_raven
+```
+
+\newpage
+
+####  Radar Slytherin
+
+```{r slyth Radar, echo=FALSE, message=FALSE, warning=FALSE, fig.width=12, fig.height=14}
+radar_slyth
+```
+
+\newpage
+
+# Extras
+
+## Plots
+
+#### Box Plot of Houses
+
+```{r Box, echo=FALSE, message=FALSE, warning=FALSE, fig.width=12, fig.height=14}
+# BoxPlot
+sorting_hat_results_v2 %>%
+  gather(gryffindor, hufflepuff, ravenclaw, slytherin, key = 'houses', value = 'freq') %>%
+  ggplot(aes(y = freq, x = houses, fill = houses))+
+    geom_boxplot(notch=TRUE)+
+    geom_jitter(alpha = 0.4, size = 0.5)+
+    scale_fill_manual(values = color_by_alphabetical)+
+    scale_x_discrete(labels = c('Gryffindor', 'Hufflepuff', 'Ravenclaw', 'Slytherin'))+
+    guides(fill = FALSE)+
+    labs(title = 'Houses Frecuencies Distributions',
+         caption = 'author: Becerra-Soto E.',
+         x = '',
+         y = '')
+```
+
+\newpage
+
+#### Correlation of Houses
+
+```{r Correlogram, echo=FALSE, message=FALSE, warning=FALSE, fig.width=12, fig.height=14}
+# Houses
+ggcorr(select(houses, -Nombre, -House), label = TRUE)+
+  labs(title = 'Correlation between Houses',
+       caption = 'author: Becerra-Soto E.')
+```
+
+\newpage
+
+#### Correlation Matrix of People
+
+```{r People Corr, echo=FALSE, message=FALSE, warning=FALSE, fig.width=16, fig.height=17}
+# Corr for people
+people_cor <- cor(t(m_houses))
+# Heat Map of people
+as_tibble(people_cor) %>%
+  mutate(Nombre = houses$Nombre) %>%
+  select(Nombre, everything()) %>%
+  gather(key = Versus, value = Corr, -Nombre) %>%
+  ggplot(aes(y = Nombre, x = Versus, fill = Corr))+
+  geom_tile()+
+  scale_fill_viridis_c()+
+  theme(axis.text.x = element_text(angle = 90))+
+  labs(title = 'Correlation between People',
+       x = '', y = '',
+     caption = 'author: Becerra-Soto E.',
+     fill = '')+
+  coord_fixed(ratio = 1)
+```
+
+\newpage
+
+#### Distance Matrix of People
+
+```{r Distance, echo=FALSE, message=FALSE, warning=FALSE, fig.width=16, fig.height=17}
+as_tibble(as.matrix(dist(m_houses, method = 'euclidean'))) %>%
+  mutate(Nombre = houses$Nombre) %>%
+  select(Nombre, everything()) %>%
+  gather(key = Versus, value = Dist, -Nombre) %>%
+  ggplot(aes(y = Nombre, x = Versus, fill = Dist))+
+  geom_tile()+
+  ggtitle('Distance Matrix')+
+  scale_fill_viridis_c()+
+  theme(axis.text.x = element_text(angle = 90))+
+  labs(title = 'Distance between People',
+       x = '', y = '',
+       caption = 'author: Becerra-Soto E.',
+       fill = '')+
+  coord_fixed(ratio = 1)
+```
+
+\newpage
+
+## Combinatorics
+
+How many different results are in the quiz?  
+
+Just to get an approximation we are going to suppose that each
+question has four answers and that each answer contributes
+towards only one House percentage. (We know that our assumptions are wrong,
+as the questions 1. and 13. only have three answers).  
+
+If each question maps to just one House we could represent an
+instance of the quiz as a string of length 15
+where each position marks the House that is supported by the answer
+with the same number as the position in the string.
+For instance the string: GHRSRSGG... would represent a quiz that the
+answer number 1 contributes to Gryffindor, the answer number 2 contributes to
+Hufflepuff. the number 3 to Ravenclaw, and so on.  
+
+Because we are interested in the total contribution to each House,
+the order does not matter and also we are allowed to repeat the
+the contribution to the same House between different questions.  
+
+So the problem gets reduced to count the different ways to fill 15 positions (answers),
+from a pool of 4 characters (Houses), with repetition and where order does not matter.  
+
+Using separators it could be easily solved.  
+
+$15 + 4 - 1 \choose 4-1$ = `r choose(15 + 4 - 1, 4 - 1)`  
+
+So there are, an approximation of, `r choose(15 + 4 - 1, 4 - 1)` unique ways to answer the quiz.
+
+\newpage
+
+# References
+
+> https://www.buzzfeed.com/eleanorbate/accurate-af-sorting-quiz
+
+> https://en.wikipedia.org/wiki/Hogwarts
+
+> https://en.wikipedia.org/wiki/Magical_objects_in_Harry_Potter
+
+> https://www.r-bloggers.com/how-to-perform-hierarchical-clustering-using-r/
+
+## Quiz
+
+1. **You’ve made it to Hogwarts, which means you’ve already bought a wand from Ollivander’s. What material is at its core?**
+* Phoenix Feather
+* Dragon Heartstring
+* Unicorn Hair
+
+2. **During the end-of-year exams, you notice that one of your classmates was using an enchanted quill. You come top of the class anyway, but they are second. What do you do?**
+* Tell the professor immediately – cheating is wrong, no matter what.
+* Nothing, but if I hadn't come top of the class, I'd definitely tell the professor.
+* Encourage the other student to admit what they'd done to the professor.
+* Give them a high five for managing to sneak the quill into the exam.
+
+3. **You would be most hurt if a person called you...**
+* Weak
+* Ignorant
+* Unkind
+* Boring
+
+4. **You're locked in a duel with a skilled opponent. They fire an unknown spell at you, and you shout…**
+* Expelliarmus!
+* Protego!
+* Stupefy!
+* Crucio!
+
+5. **It's your fifth year at Hogwarts, and you've just received a Howler from your parents. What for?**
+* Sneaking into the Forbidden Forest at night on a dare.
+* Getting caught cheating in my Divination O.W.L.
+* Being put in detention after I was caught in the library after hours.
+* Nothing! I'd never do anything to warrant a Howler.
+
+6. **Which of these Dumbledore quotations speaks to you?**
+* "Pity the living, and above all, those who live without love."
+* "Words are, in my not-so-humble opinion, our most inexhaustible source of magic."
+* "It matters not what someone is born, but what they grow to be."
+* "It does not do to dwell on dreams and forget to live."
+
+7. **Which of these most accurately describes your relationship with your closest friends?**
+* I love surrounding myself with people – the more friends I have, the better!
+* I have a few very close friends that I would trust with my life.
+* I tend to be wary around new people, so don't make new friends often.
+* I find myself becoming friends with people who can help me to succeed.
+
+8. **Which of your skills are you most proud of?**
+* My ability to absorb new information.
+* My ability to make new friends.
+* My ability to get what I want.
+* My ability to keep secrets.
+
+9. **The first Quidditch match of the season is approaching, and you can't wait to get** involved. What role are you playing?
+* Seeker. I want the glory!
+* Chaser. I like to be involved, and work as part of the team.
+* Beater. I like having all that power.
+* I'll be in the crowd, making sure supporter morale is high!
+
+10. **You're allowed a pet at Hogwarts: an owl, a cat, or a toad. Which do you bring?**
+* Owl
+* Cat
+* Toad
+* Nothing. I can't be trusted to look after a pet!
+
+11. **It's Saturday, you've finished your homework, and you have some free time. You decide to spend some time away from your common room. Where do you go?**
+* The Forbidden Forest
+* The library
+* The kitchens
+* The Room of Requirement
+
+12. **What would you see in the Mirror of Erised?**
+* Myself, surrounded by riches.
+* Myself, surrounded by my loving family and friends.
+* Myself, knowledgeable above all.
+* Myself, experiencing a marvelous adventure.
+
+13. **Choose a Deathly Hallow.**
+* The Elder Wand
+* The Resurrection Stone
+* The Cloak of Invisibility
+
+14. **Which path do you intend to follow after leaving Hogwarts?**
+* I'd join the Ministry – I want to make a difference in the world.
+* I think I'd travel for a while before committing to a career.
+* I'd settle down and start a family as soon as possible!
+* I'd continue to work hard in order to achieve as much success as possible.
+
+15. **And finally: We know that the Sorting Hat takes into account your preferences. So which Hogwarts house do you feel you identify with most closely?**
+* Gryffindor
+* Hufflepuff
+* Ravenclaw
+* Slytherin

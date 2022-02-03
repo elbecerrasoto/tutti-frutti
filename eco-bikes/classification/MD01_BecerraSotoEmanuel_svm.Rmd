@@ -1,0 +1,372 @@
+---
+title: "SVM over EcoBici 2017 Data"
+subtitle: "MD01 CIC IPN"
+author: "Emanuel Becerra Soto"
+date: "December 2018"
+output: pdf_document
+---
+
+# Introduction
+
+The dataset analyzed was a subset of the EcoBici 2017 trips data.
+All the trips made on 2017 are approximately 10,000,000 but after some cleaning
+a 20% of the data was taken for exploratory analysis.
+
+Here we further divide this 20% percent into only the trips containing the two most used 
+stations (starting trips): 27 (Reforma) and 271 (Buenavista), for a total of ~37,000 trips
+
+The goal of the analysis is to classify the trips that ended up on
+either Reforma (27) or Buenavista(271), possibility uncovering some
+mobility patterns on Mexico City.
+
+Part of the the reason of only classifying only two stations was due by time and computational
+constrains but a future objective is to extend the reach of this analysis.
+
+For the classification a Support Vector Machine was used.
+
+```{r}
+
+# Setting seed for reproducibility
+set.seed(8745)
+
+####### Libraries #######
+library(e1071)
+library(tidyverse)
+library(caret)
+library(ggthemes)
+library(wesanderson)
+```
+
+```{r}
+partition_data <- function(data_all, train = 0.6, test = 0.2){
+  validation <- 1 - (train + test)
+  n <- nrow(data_all)
+  
+  n_train <- floor(n * train)
+  n_test <- ceiling(n * test)
+  n_validation <- n - (n_train + n_test)
+  
+  random_idx <- sample(1:n) 
+  idx_train <- random_idx[1:n_train]
+  idx_test <- random_idx[(n_train+1) : (x <- (n_train+1 + n_test-1))]
+  idx_validation <- random_idx[ (x+1) : n]
+  
+  idx_train <- sort(idx_train)
+  idx_test <- sort(idx_test)
+  idx_validation <- sort(idx_validation)
+  
+  data_train <- data_all[idx_train,]
+  data_test <- data_all[idx_test,]
+  data_val <- data_all[idx_validation,]
+  
+  return(list(data_train, data_test, data_val)) 
+}
+```
+
+# Wrangling the data for the classification task
+
+The data was loaded.
+
+```{r}
+####### Loading the data #######
+
+file <- '2017_bikes_val_3.csv'
+bikes <- read_csv(file)
+
+head(bikes, n = 10)
+dim(bikes)
+```
+
+Any trip with a duration of more than a day was considered as an outlier and removed.
+
+```{r}
+####### Removing trips that lasted more than 24hrs. #######
+
+# The trips lasting more than 24 hours were consideered as outliers
+# Removing trips that were more than a day
+threshold <- 24 * 3600
+bikes <- filter(bikes, bikes$trip_time_seconds <= threshold)
+```
+
+A three new columns were derived from the data and then added.
+The new columns are: The trips that exceeded the 45 min and 1 hour mark and column
+combining both exceeding times.
+
+The reason for adding the new columns is that the EcoBici service charges and extra
+fee for exceeding certain times, providing more information for the classification.
+
+## Exceeding time trips
+
+```{r}
+####### Adding extra columns with exceding times #######
+
+# Setting the exceding times
+# EcoBici system set prices (MXN) for exceeding time tips as follows:
+#   
+# From 0min-45min No extra cost.
+# From 45min-60min $12.00.
+# From Each extra hour $39.00.
+# From More than a day 24 hrs. $5485.00.
+
+exceeding_time <- 45 * 60
+exceeding_time_hour <- 1 * 3600
+
+# Adding a vector of all the exeding time trips
+bikes$exceeding <- bikes$trip_time_seconds > exceeding_time
+
+# Adding the 1 hour exeding trips
+bikes$exceeding_hour <- bikes$trip_time_seconds > exceeding_time_hour
+
+# Adding a colunm with the type of exceeding
+exceeding_type <- paste(bikes$exceeding, bikes$exceeding_hour)
+exceeding_type <- sub( x = exceeding_type, pattern =  'FALSE FALSE', replacement = 'no_exceeding' )
+exceeding_type <- sub( x = exceeding_type, pattern =  'TRUE FALSE', replacement = '45_min' )
+exceeding_type <- sub( x = exceeding_type, pattern =  'TRUE TRUE', replacement = '1_hour' )
+bikes$exceeding_type <- exceeding_type
+```
+
+```{r}
+ggplot(bikes, aes(x = exceeding, fill = exceeding_type))+
+  geom_bar()+
+  ggtitle('Exceeding Time Trips Eco Bici 2017')+
+  scale_x_discrete(labels=c('On time','Exceeding'))+
+  ylab('Trips')+
+  scale_fill_manual(values=wes_palette("Royal1"),
+                    name='Trip Duration',
+                    labels=c("1 hour or more", "Between 45 min - 1 hour",
+                             "Below 45 min"))+
+  theme_fivethirtyeight()
+```
+
+**Figure 1.-** Bar plot for showing the number of exceeding trips of the 20% of all the Eco Bici Trips
+on 2017.
+
+## Feature Selection
+
+From previous analyzes of the data, probably uninformative and
+redundant variables, some of them directly redundant as were derived from the originally 9 ones.
+
+On future analyses more variables could be added.
+
+From the 23 variables: sex, age, station start number, trip duration in seconds,
+month, hour, minute and if the trip exceeded the 45 min mark were selected.
+first approach for the classification 
+
+```{r}
+# Feature Selection by hand
+names(bikes)
+hand_picked_features <- c('sex', 'age', 'station_start',
+                          'trip_time_seconds', 'leave_month',
+                          'leave_day', 'leave_hour', 'leave_minute',
+                          'exceeding', 'station_end')
+bikes2 <- bikes[ hand_picked_features ]
+```
+
+## Station Usage Statistics
+
+As explained in the introduction only two stations were classified due to time and
+computational constrains.
+The classification task was as follows: from the trip data, including initial
+station, predict the destination. The two most used initial stations were used:
+27 (Reforma) and 271 (Buenavista).
+
+So the two most used stations were found:
+
+```{r}
+# Counting the most used stations
+station_usage_start <- arrange( as.tibble( table(bikes$station_start) ), desc(n) )
+station_usage_start$perct_start <- ( station_usage_start$n / sum(station_usage_start$n) )
+station_usage_end <- arrange( as.tibble( table(bikes$station_end) ), desc(n) )
+station_usage_end$perct_end <- ( station_usage_end$n / sum(station_usage_end$n) )
+
+# Joining start and end stations usage percent onto one table
+station_usage <- inner_join(station_usage_start, station_usage_end, by = 'Var1')
+station_usage <- rename(station_usage, st_id = Var1 , n_start = n.x, n_end = n.y)
+station_usage <- arrange(station_usage, desc(n_end))
+
+# Printing the top 10 most used stations
+station_usage[1:10,]
+```
+Table of the top 10 most used stations ordered by start.
+
+```{r}
+# Cumulative percents over station usage  
+plot(cumsum(station_usage$perct_start))
+```
+
+**Figure 2.-** Cumulative frequency of usage of the starting stations.
+
+```{r}
+plot(cumsum( sort(station_usage$perct_end, decreasing = TRUE) ))
+```
+
+**Figure 3.-**Cumulative frequency of usage of the ending stations.
+
+The most used stations are:
+```{r}
+# Printing the top 10 most used arriving stations
+( top_10 <- station_usage$st_id[1:10] )
+```
+
+## One Hot encoding and Normalization.
+
+One hot encoding over the categorical variables were used and min-max
+normalization was used due to the Support Vector Machine have troubles
+with unscaled data and only work with numeric data.
+
+```{r}
+# Get the trips that ended on a top 10
+bikes3 <- bikes2[ as.character(bikes2$station_end) %in% top_10, ]
+
+# Changing data types
+bikes3$station_start <- as.character( bikes3$station_start )
+bikes3$station_end <- as.character( bikes3$station_end )
+bikes3$exceeding <- as.numeric( bikes3$exceeding)
+
+# Removing target variable
+station_end_y <- bikes3$station_end
+bikes3 <- select( bikes3, -station_end )
+
+# One hot encoding of categorical variables
+var_types <- sapply( bikes3, class)
+bikes3_cat <- bikes3[ var_types == 'character' ]  
+bikes3_num <- bikes3[ var_types == 'numeric' | var_types == 'integer' ]
+# One Hot
+dummies <- dummyVars( ~ . , bikes3_cat )
+bikes3_1_hot <- predict( dummies, bikes3_cat )
+
+# Normalizing the numeric variable to fall into the 0-1 inteval
+normalization_max_min <- function(x){
+  ( x - min(x) ) / ( max(x) - min (x) )
+}
+bikes3_num_norm <- apply( bikes3_num, 2 , function(x) { ( x - min(x) ) / ( max(x) - min (x) ) } )
+
+# Binding everything together
+# Y class target X Numeric Normalized and X Categorical 1-hot encoded
+bikes_4 <- bind_cols( tibble(station_end_y), as_tibble(bikes3_num_norm), as_tibble(bikes3_1_hot) )
+bikes_4$station_end_y <- factor(bikes_4$station_end_y)
+
+# Writting the normalized table
+# write_csv(x = bikes_4, path = 'bikes_svm.csv')
+
+bikes_4[1:10,1:10]
+```
+
+# SVM training
+
+```{r}
+# Loading the data
+bikes <- read_csv('bikes_svm.csv')
+
+# Selecting the most used starting stations 27 (Reforma) and 271 (Buenavista)
+bikes_svm <- filter(bikes, station_end_y == '27' | station_end_y == '271')
+
+# Removing stations withzero sum
+bikes_sums <- sapply(bikes_svm[-1], sum)
+sum_0_cols <- names( bikes_sums[bikes_sums == 0] )
+# Removing
+bikes_svm <- bikes_svm[ -match(sum_0_cols, names(bikes_svm)) ]
+
+bikes_svm$station_end_y <- factor(bikes_svm$station_end_y)
+# Partitioning the data into Train, Test and Validations Sets
+partition_bikes <- partition_data(data_all = bikes_svm, train = 0.60, test = 0.20)
+train_bikes <- partition_bikes[[1]]
+test_bikes <- partition_bikes[[2]]
+val_bikes <- partition_bikes[[3]]
+
+# Checking for 0 sum vectors after the splitting
+x <- sapply(train_bikes[-1], sum)
+sum_0_cols <- names( x[x == 0] )
+colSums(test_bikes[sum_0_cols])
+colSums(val_bikes[sum_0_cols])
+
+
+# Removing 0 suming vector in training in all sets
+train_bikes <- train_bikes[ -match(sum_0_cols, names(train_bikes)) ]
+test_bikes <- test_bikes[ -match(sum_0_cols, names(test_bikes)) ]
+val_bikes <- val_bikes[ -match(sum_0_cols, names(val_bikes)) ]
+```
+
+Training the model.
+
+```{r}
+# Training the svm
+# svm_model <- svm( station_end_y ~ . , data = train_bikes )
+# summary(svm_model)
+
+# Save an object to a file
+# saveRDS(svm_model, file = "svm_model_271.rds")
+# Restore the object
+svm_model <- readRDS(file = "svm_model_271.rds")
+```
+
+## Results
+
+Printing the parameters of the model.
+
+```{r}
+svm_model
+```
+
+
+Printing the confusion matrix.
+
+```{r}
+predictions <- predict(svm_model, val_bikes)
+# Confusion Matrix
+confusion <- as.matrix( table(predictions, val_bikes$station_end_y) )
+confusion
+tp <- confusion[1,1]
+tn <- confusion[2,2]
+fp <- confusion[1,2]
+fn <- confusion[2,1]
+```
+
+```{r}
+accuracy <- (tp + tn) / (tp + tn + fp + fn)
+# Accuracy of the svm in the validation set
+acc_h <- round(accuracy * 100, 2)
+```
+
+The accuracy was `r acc_h`.
+
+The accuracy is not great and can probably be further improved by tuning the parameters.
+
+The next following plots are the decision boundaries see through 2 selected
+dimensions.
+
+```{r}
+plot(svm_model, data = train_bikes, age ~ trip_time_seconds)
+```
+
+**Figure 4.-** Decision boundary of age and trip duration.
+
+```{r}
+plot(svm_model, data = train_bikes, leave_hour ~ trip_time_seconds)
+```
+
+**Figure 5.-** Decision boundary of hour and trip duration.
+
+```{r}
+plot(svm_model, data = train_bikes, leave_hour ~ station_start1)
+```
+
+**Figure 6.-** Decision boundary of hour and starting station 1.
+
+```{r}
+plot(svm_model, data = train_bikes, leave_hour ~ station_start1)
+```
+
+**Figure 7.-** Decision boundary of hour and starting station 1.
+
+```{r}
+plot(svm_model, data = train_bikes, station_start1 ~ station_start2)
+```
+
+**Figure 8.-** Decision boundary of starting station 1 and starting station 2.
+
+```{r}
+plot(svm_model, data = train_bikes, station_start1 ~ station_start3)
+```
+
+**Figure 9.-** Decision boundary of starting station 1 and starting station 3.

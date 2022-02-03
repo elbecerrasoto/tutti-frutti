@@ -1,0 +1,12 @@
+#!/bin/bash
+
+file=$1
+tmp='tmp_trim_blanks'
+
+perl -pe 's/\s+$/\n/' $file > $tmp
+rm $file
+mv $tmp $file
+
+echo 'Done'
+
+

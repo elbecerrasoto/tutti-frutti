@@ -1,0 +1,172 @@
+---
+title: "Analco Plots"
+author: "Emanuel Becerra Soto"
+date: "September 15, 2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,  message=FALSE)
+```
+
+```{r}
+# Libraries ---------------------------------------------------------------------
+
+library(tidyverse)
+
+# Loading -----------------------------------------------------------------------
+
+analco_personas <- read_tsv('personas.tsv')
+analco_opiniones <- read_tsv('preguntas_abiertas.tsv')
+
+# Separating Opinions -----------------------------------------------------------
+
+# Adding persona
+analco_opiniones <- analco_opiniones %>% 
+  mutate(persona = 1:nrow(analco_opiniones)) %>% 
+  select(persona, everything())
+
+# Converting persona to chr
+analco_personas <- mutate(analco_personas, persona=as.character(persona))
+analco_opiniones <- mutate(analco_opiniones, persona=as.character(persona))
+
+# Separating opinions, one per row
+analco_opiniones <- analco_opiniones %>% 
+  separate_rows(sentir, sep=',') %>% 
+  separate_rows(problematica, sep=',') %>%
+  separate_rows(propuesta, sep=',') %>%
+  separate_rows(opcional, sep=',')
+
+# Filter No Visitado ------------------------------------------------------------
+
+visit_analco_personas <- analco_personas %>% 
+  filter(visitado)
+
+visit_analco_opiniones <- analco_opiniones %>% 
+  filter(!( is.na(sentir) & is.na(problematica) & is.na(propuesta) & is.na(opcional) ))
+
+```
+
+## Preguntas Solas
+
+### Edad
+
+```{r}
+analco_personas %>% 
+  count(edad) %>% 
+  knitr::kable()
+```
+
+### Visitado
+
+```{r}
+analco_personas %>% 
+  count(visitado) %>% 
+  knitr::kable()
+```
+
+### Frecuencia
+
+```{r}
+visit_analco_personas %>% 
+  count(frecuencia) %>% 
+  knitr::kable()
+```
+
+### Horario
+
+```{r}
+visit_analco_personas %>% 
+  count(horario) %>% 
+  knitr::kable()
+```
+
+### Motivo
+
+```{r}
+visit_analco_personas %>% 
+  count(motivo) %>% 
+  knitr::kable()
+```
+
+### Gustan
+
+```{r}
+visit_analco_personas %>% 
+  count(gustan) %>% 
+  knitr::kable()
+```
+
+### Sentir
+
+```{r}
+visit_analco_opiniones %>% 
+  count(sentir) %>% 
+  knitr::kable()
+```
+
+### Problematica
+
+```{r}
+visit_analco_opiniones %>% 
+  count(problematica) %>% 
+  knitr::kable()
+```
+
+### Propuesta
+
+```{r}
+visit_analco_opiniones %>% 
+  count(propuesta) %>% 
+  knitr::kable()
+```
+
+### Opcional
+
+```{r}
+visit_analco_opiniones %>% 
+  count(opcional) %>% 
+  knitr::kable()
+```
+
+### Preguntas Combinadas
+
+### Edad-Visitado
+
+```{r}
+analco_personas %>% 
+  group_by(edad, visitado) %>% 
+  count() %>% 
+  knitr::kable()
+```
+
+### Horario-Motivo
+
+```{r}
+visit_analco_personas %>% 
+  group_by(horario, motivo) %>% 
+  count() %>% 
+  knitr::kable()
+```
+
+### Frecuencia-Gustan
+
+```{r}
+visit_analco_personas %>% 
+  group_by(horario, motivo) %>% 
+  count() %>% 
+  knitr::kable()
+```
+
+### Propuesta-Problematica
+
+```{r}
+visit_analco_opiniones %>% 
+  group_by(propuesta, problematica) %>% 
+  count() %>% 
+  knitr::kable()
+```
+
+
+
+

@@ -1,0 +1,314 @@
+Emanuel 1 liners
+
+# Select the fist 500 fasta entries of a fasta file
+perl -e '$i=0;while(<>){if(/^>/){$i++;}if($i<=500){print;}}' my_seq.fna
+
+# Select from 501th until 1000th entries of a fasta file
+perl -e '$i=0;while(<>){if(/^>/){$i++;}if($i>=501&&$i<=1000){print;}}' my_seq.fna
+
+# Print the lines with 7 characters in the file.txt
+perl -ne '$l=length($_)-1;if($l==7){print $_;}' file.txt
+
+# Check for the first lines of an gz file
+gzip -cd read.fq.gz | head
+
+# Uncompress a gzip file
+gzip -dkv uniprot-proteome.tab.gz
+
+# Translate a fna to protein and then format to 60 characters per line
+translate_multi_fasta.pl 10.fna | fasta_formatter -w 60 > 10.faa
+
+# Copy all the files with certain extension under the target directory
+find target/ -type f -name "*.ext" | xargs -i cp {} destiny/
+
+# Bakup data from server, if connection fails rerun to resume
+rsync -av --progress user@server.com:/path/dir /home/ebecerra/bak/
+
+# Sort by size
+ls -lhS fq_files/
+
+# Don't print directories and sort files by size
+ls -lS | grep -v '^d'
+
+# Calculate the size of a directory
+alias diskmem='du -ha --max-depth=0'
+diskmem target/
+du -h .
+
+# Run script.sh in backgrund and get the output in log.out
+nohup bash script.sh > log.out &
+
+# Kill a job at background, jobs are numerated as this 1,2,3...
+kill %1
+
+# Generate 8 random alphanumeric characters
+echo `head /dev/urandom | tr -dc A-Za-z0-9 | head -c 8`
+
+# Download the file "pfam2go" from a ftp server
+wget http://geneontology.org/external2go/pfam2go
+
+# Download from FTP site all files that start with "Salmonella"
+wget -r --no-parent ftp://ftp.ncbi.nih.gov/genomes/Bacteria/Salmonella*
+
+# Print the header of table in a good looking way
+csvheader -d '\t' Uniprot_14028S.tab
+head -1 Uniprot_14028S.tab | tr '\t' '\n' | nl
+
+# Go to the containing directory of any executable
+cd $(dirname $(which csvquote))
+
+# How to make a soft link, useful to avoid copying big files again and again
+ln -s /home/user/target.txt newname
+ln -s /home/user/target.txt
+
+# Count the ocurrences of the "GO:[0-9]+\b" substring per line
+perl -ne '$i=0;while($_=~/GO:[0-9]+\b/g){$i+=1;}print"$i\n";' GO2panG
+
+# Which lines of the file GO2panG have exactly two times an specific substring
+perl -ne '$i=0;while($_=~/substring/g){$i+=1;}print"$i\n";' GO2panG | grep -n 2
+
+# Print the lines numbers of go.obo
+head -50 go.obo | nl -ba
+
+# How to encrypt a bunch of files in to_tar/
+tar -cvf secrets.tar to_tar/
+gpg -c secrets.tar
+
+# How to decrypt a bunch of files
+gpg -d secrets.tar.gpg > secrets.tar #DANGER easy overwrite
+#DONT REPEAT NAMES
+tar -xvf secrets.tar
+
+# Open the file explorer GUI at pwd
+nautilus .
+
+# Top ten of the most used commands, useful if looking for aliases
+history | awk '{CMD[$2]++;count++;}END { for (a in CMD)print CMD[a] " " CMD[a]/count*100 "% " a;}' | grep -v "./" | column -c3 -s " " -t | sort -nr | nl | head -n10
+
+# Parallel conversion of images that you wish to resize
+find . -name '*.jpg' | parallel convert -resize 512x384 {} {}_web.jpg
+
+# Diagnose boot times
+systemd-analyze
+systemd-analyze blame
+systemd-analyze plot > plotBoot.svg
+systemd-analyze critical-chain
+
+# Disable services that slow down your boot time (You MUST KNOW what are you disabling)
+systemctl disable NetworkManager-wait-online.service
+
+# Turn off the swap disk
+sudo swapoff -a
+
+# To get information about disks partitions
+df -T
+lsblk
+
+# Checking Kernel and graphics card
+lshw -c video
+uname -a
+
+# Example Perl, reduce to two digits the first field of a csv
+perl -e '$i=0;while(<>){if(/0\.[0-9]{3,}/){s/(0\.[0-9]{2})[0-9]+/$1/;print $_;}else{print $_;}}' 1to1_Overlap.v2.csv | less
+
+# Read a file line by line
+paste Test_IDS.txt | while read -r line; do echo "Hey: $line"; done
+
+# Easy Parallel
+parallel --will-cite --xapply echo {1} {2} ::: A B ::: C D
+parallel --will-cite --xapply echo {1} {2} :::: file1.txt :::: file2.txt
+
+# How many cpus Do I have?
+parallel --number-of-cpus
+nproc --all
+
+# Asking for dev space in hipergator
+module load ufrc
+srundev --time=60 --cpus-per-task=4 --mem-per-cpu=4gb
+
+# Sed delete regex matches from "SRR1214178.fasta" then save it on new file
+sed -r 's/_length_[0-9]+_cov_.+_ID_[0-9]+//g' SRR1214178.fasta > SRR1214178.v1.fasta
+
+# Don't print blank lines
+sed -n '/^$/ !p'
+sed '/^$/ d'
+
+# Convert all the multiple spaces to single ones
+sed -r 's/[[:space:]]+/ /g'
+
+# Iterative moving, bash for loop
+for i in `ls | sed -n '40,60p'`;
+do;
+mv $i ..;
+done #iterative moving
+
+# Arithmetic in bash
+echo '23/24' | bc -l
+
+# Print line number, even if is blank of "file.sh"
+nl -b a file.sh
+
+# Metadata of a file
+stat file.txt
+
+# Invert Screen Colors Useful when reading at nigth
+xcalib -invert -alter
+
+# Awk example,rearrenging the columns of a tsv and csv
+awk 'BEGIN {OFS="\t"} {print $1,$2,$7,$3,$4,$6}' 1.2_chrm.greve.tsv
+awk -F, 'BEGIN {OFS=","} {print $2,$3,$4,$5,$6}' ALL.Rounded.csv | tr -d '"' > ALL.Rounded.2.csv
+
+# Download Youtube Videos
+youtube-dl https://www.youtube.com/watch?v=R9N5X4q6Unc&t=920s
+youtube-dl --playlist-items 1 https://www.youtube.com/watch?v=_MnsRSoCK3U&list=RD_MnsRSoCK3U#t=1
+
+# Download Youtube Videos and Extract the audio
+# -k keeps the video
+youtube-dl -x -k https://www.youtube.com/watch?v=R9N5X4q6Unc&t=920s
+youtube-dl -x --audio-format mp3 https://www.youtube.com/watch?v=p9bbYSuMQCU
+
+# Debian System Info
+screenfetch
+
+# PDF merge and extract
+pdftk cover.pdf p1-2.pdf p3.pdf p4.pdf cat output EscriturasCasa.pdf
+pdftk mix_4_13.pdf cat 2 output p13.pdf
+
+# PDF to txt and then vizualize in terminal
+pdftotext GABenchToB.pdf && less GABenchToB.txt
+
+# cat to create a new txt file, ctrl-D to stop typing
+cat > demo.c
+
+# Compilling demo.c
+make demo
+gcc demo.c -o executable.demo
+
+# Create a .tar.gz
+tar -zcvf tar-archive-name.tar.gz source-folder-name
+
+# Uncompress a .tar.gz
+tar -zxvf tar-archive-name.tar.gz
+
+# Remove files with zero size in the target dir and below
+find target/ -size 0 -print0 | xargs -0 rm
+
+# Create a file and of all its non-existent parent directories
+install -Dv /dev/null /etc/X11/xorg.conf.d/20-intel.conf
+
+# StarWars Movie Ep IV
+telnet towel.blinkenlights.nl
+
+# Get the weather
+curl wttr.in/mexico
+
+# Music conversion
+avconv -i FindSong.m4a FindSong.2.mp3
+
+# Get name of disks and umount, usb, device
+lsblk
+umount /dev/sda1
+
+# Create a bootable USB
+sudo dd bs=4M if=/home/ebecerra/Downloads/OS_distros/ubuntu-18.04.1-desktop-amd64.iso of=/dev/sda1 && sync
+
+# Grep to the processes IDs, find the ID of a process
+pgrep -l '^dd'
+
+# Hide a file (snap) on nautilus
+echo snap >> ~/.hidden
+
+# python3 library installation user specific
+pip3 install --user seaborn
+
+# python3 library installation using anaconda
+conda install tensorflow
+
+# Convert unicode to ascii
+iconv -f utf-8 -t ascii//translit
+
+# Activate conda envioroment (duch_01)
+source activate duch_01
+conda activate duch_01
+
+# Activate conda envioroment
+source deactivate
+
+# Generate 7 passwords of length 13
+pwgen 13 7
+pwgen -s 13 7
+
+# Cut all the lines of input at character 80
+cut colombos_ecoli_exprdata.txt -c -80
+
+# Don't wrap lines with less
+less -S
+
+# Invert colors of an image
+convert -negate src.png dst.png
+
+# Merge/concatenate pdfs
+pdftk file1.pdf file2.pdf cat output notes.pdf
+
+# Get file name with out extension
+${i%.*}
+
+# Get the filename
+for i in `cat faa.list.txt`; do echo ${i##*/}; done
+
+# Cena Viridiana download command
+youtube-dl --yes-playlist --audio-quality 0 --extract-audio --keep-video https://www.youtube.com/playlist?list=PLKweXFWM1RWyeImBaGS-mrsIat5ucVai8
+
+# Count the extensions
+ls | while read -r LINE; do echo ${LINE##*.}; done | sort | uniq -c
+
+# Change files names, double iterators, two variable
+paste old.names.txt new.names.txt | while read -r OLD NEW; do mv ALL_GFF/$OLD ALL_GFF/$NEW; done
+
+# Rename all the file in a dir, removing spaces for _
+rename -n 's/ +/_/g' *
+
+# Remove all the trailing tabs and whitespaces
+perl -pe 's/\s+$/\n/' test_text.txt
+
+#### Extra Info ####
+
+#### translate_multi_fasta.pl ####
+
+#!/usr/bin/perl
+use Bio::SeqIO;
+
+$file=$ARGV[0];
+
+my $sequences = Bio::SeqIO->new(
+    -file   => $file,
+    -format => "fasta",
+);
+
+while ( my $dna = $sequences->next_seq ){
+    my $protein = $dna->translate(
+        -codontable_id => 1, # standard genetic code
+        -frame         => 0, #reading-frame offset 0
+    );
+    print ">",$dna->display_id, "\n";
+    print $protein->seq, "\n";
+}
+
+
+Step 1: Commit all your changes
+Before proceeding, make sure all your changes are committed, including your .gitignore file.
+
+Step 2: Remove everything from the repository
+To clear your repo, use:
+
+git rm -r --cached .
+rm is the remove command
+-r will allow recursive removal
+–cached will only remove files from the index. Your files will still be there.
+The . indicates that all files will be untracked. You can untrack a specific file with git rm --cached foo.txt (thanks @amadeann).
+The rm command can be unforgiving. If you wish to try what it does beforehand, add the -n or --dry-run flag to test things out.
+
+Step 3: Re add everything
+git add .
+Step 4: Commit
+git commit -m ".gitignore fix"
